@@ -1,6 +1,6 @@
 from typer.testing import CliRunner
 
-from oh_llm.cli import app
+from oh_llm.cli import ExitCode, app
 
 
 def test_cli_help_smoke() -> None:
@@ -19,5 +19,4 @@ def test_cli_help_smoke() -> None:
 def test_cli_run_is_nonzero_until_implemented() -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["run"])
-    assert result.exit_code != 0
-
+    assert result.exit_code == ExitCode.INTERNAL_ERROR

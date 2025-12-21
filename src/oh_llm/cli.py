@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Any
 
 import typer
 
 from oh_llm import __version__
+
+
+class ExitCode(IntEnum):
+    OK = 0
+    INTERNAL_ERROR = 1
+    RUN_FAILED = 2
 
 
 @dataclass(frozen=True)
@@ -65,7 +72,7 @@ def run(ctx: typer.Context) -> None:
         payload={"ok": False, "error": "not_implemented"},
         text="Run runner not implemented yet. See PRD.md (Stage A/B).",
     )
-    raise typer.Exit(code=2)
+    raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
 
 
 @profile_app.command("list")
@@ -84,7 +91,7 @@ def profile_create(ctx: typer.Context) -> None:
         payload={"ok": False, "error": "not_implemented"},
         text="Profile creation not implemented yet. (Planned: reuse SDK LLMRegistry.)",
     )
-    raise typer.Exit(code=2)
+    raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
 
 
 @runs_app.command("list")
@@ -103,7 +110,7 @@ def autofix_start(ctx: typer.Context) -> None:
         payload={"ok": False, "error": "not_implemented"},
         text="Auto-fix not implemented yet.",
     )
-    raise typer.Exit(code=2)
+    raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
 
 
 @app.command()
@@ -115,7 +122,7 @@ def tui(ctx: typer.Context) -> None:
         payload={"ok": False, "error": "not_implemented"},
         text="TUI not implemented yet.",
     )
-    raise typer.Exit(code=2)
+    raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
 
 
 app.add_typer(profile_app, name="profile", help="Manage LLM profiles.")
