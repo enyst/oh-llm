@@ -97,28 +97,20 @@ Purpose: verify credentials and base URL wiring.
   - content is parseable into expected SDK message structures,
   - errors are mapped sensibly (no cryptic provider exceptions).
 
-### Stage B — Minimal conversation run (no tool calls)
+### Stage B — End-to-end agent run (tool calling)
 
-Purpose: ensure SDK’s `Agent` + `Conversation` pipeline works.
+Purpose: end-to-end SDK run with tool calling (required).
 
-- Create `Agent(llm=..., tools=[TerminalTool])` (tools included but not required).
-- `Conversation.send_message("Please echo 'Hello!'")` then `Conversation.run()`.
+- Create `Agent(llm=..., tools=[TerminalTool])`.
+- Run a short prompt that forces a deterministic tool call, e.g.:
+  - “Run `echo TOOL_OK` in the terminal and then reply with TOOL_OK.”
 - Assert:
-  - conversation completes,
-  - at least one assistant message is produced.
-
-### Stage C — Tool calling smoke test
-
-Purpose: validate tool calling format and parsing (common failure mode).
-
-- Provide a safe deterministic tool action, e.g. ask the agent to run:
-  - `echo TOOL_OK` via `TerminalTool`
-- Assert:
+  - `Conversation` completes,
   - tool call was invoked (native or non-native conversion),
   - tool output is observed by the agent,
   - agent reports a final “TOOL_OK” in natural language.
 
-Note: tool calling is **required** for “works with the agent-sdk”. The SDK has a non-native tool calling compatibility layer (prompt-based conversion) so models that don’t support tool calling natively can still pass Stage C as long as the SDK can reliably translate tool intents into tool invocations.
+Note: tool calling is **required** for “works with the agent-sdk”. The SDK includes a non-native tool calling compatibility layer (prompt-based conversion), so models that don’t support tool calling natively can still pass Stage B as long as the SDK can reliably translate tool intents into tool invocations.
 
 ### Stage D — Optional advanced gates (toggleable)
 
@@ -253,7 +245,7 @@ Alternative: multi-user via GitHub Actions (possible v2)
 
 ## Milestones (suggested)
 
-1) CLI runner only (no UI): define profile format, run Stage A–C, save artifacts.
+1) CLI runner only (no UI): define profile format, run Stage A–B, save artifacts.
 2) TUI: profile editing + run history + view logs.
 3) Auto-fix agent workflow: worktree + OpenHands run + local patch output.
 4) Upstream PR automation: gh integration, fork/branch management.
@@ -263,7 +255,7 @@ Alternative: multi-user via GitHub Actions (possible v2)
 
 - **Profiles**: reuse SDK `LLMRegistry` profiles on disk for the non-secret config; inject secrets at runtime.
 - **Provider scope**: anything supported by litellm; from `oh-llm`’s POV this is “OpenAI-compatible style config” (model + optional base_url + credentials / provider fields).
-- **Definition of “works”**: Stage A–C are mandatory; tool calling is required (native or via the SDK’s non-native tool calling compatibility layer).
+- **Definition of “works”**: Stage A–B are mandatory; tool calling is required (native or via the SDK’s non-native tool calling compatibility layer).
 - **Auto-fix boundaries**: the agent may change whatever is needed for good support (SDK code, tests, docs/examples).
 - **Upstream PR target**: upstream is `OpenHands/software-agent-sdk`, PRs target `main`.
 - **Failure classification**: detect “credential/config error” vs “likely SDK bug”; only offer auto-fix by default for the latter (still allow a force option).
