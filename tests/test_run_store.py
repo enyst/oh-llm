@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -72,6 +73,8 @@ def test_append_log_redacts_secret_values(tmp_path: Path, monkeypatch: pytest.Mo
     assert "supersecret" not in contents
     assert "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaa" not in contents
     assert REDACTED in contents
+    if os.name == "posix":
+        assert (log_file.stat().st_mode & 0o777) == 0o600
 
 
 def test_cli_run_creates_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

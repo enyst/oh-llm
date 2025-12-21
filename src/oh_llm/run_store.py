@@ -139,6 +139,10 @@ def append_log(*, path: Path, message: str, redactor: Redactor) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(redactor.redact_text(line))
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 def read_run_json(path: Path) -> dict[str, Any]:
