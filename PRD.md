@@ -259,17 +259,17 @@ Alternative: multi-user via GitHub Actions (possible v2)
 4) Upstream PR automation: gh integration, fork/branch management.
 5) Web server: auth + basic HTML form + run endpoint.
 
-## Open questions (need your answers)
+## Decisions (current)
 
-1) **Profiles**: reuse SDK `LLMRegistry` profiles on disk for non-secret config; inject secrets at runtime.
-2) **Provider scope**: anything supported by litellm (treated as “OpenAI-compatible” from our perspective), using the SDK `LLM` schema to pass provider-specific fields.
-3) **Definition of “works”**: tool calling is required; Stage A–C are mandatory.
-4) **Auto-fix boundaries**: the agent is encouraged to change whatever is needed for good support (SDK code, tests, docs/examples).
-5) **Upstream PR target**: upstream is `OpenHands/software-agent-sdk`, PRs target `main`.
-6) **Multi-user**: open design choice — either a local-only tool (v1) or “multi-user by delegating runs to OpenHands Cloud” (v2) if we can solve provider-key handling.
-7) **Failure classification**: implement “credential/config error” vs “likely SDK bug” detection; only offer auto-fix by default for the latter (still allow a force option).
+- **Profiles**: reuse SDK `LLMRegistry` profiles on disk for the non-secret config; inject secrets at runtime.
+- **Provider scope**: anything supported by litellm; from `oh-llm`’s POV this is “OpenAI-compatible style config” (model + optional base_url + credentials / provider fields).
+- **Definition of “works”**: Stage A–C are mandatory; tool calling is required (native or via the SDK’s non-native tool calling compatibility layer).
+- **Auto-fix boundaries**: the agent may change whatever is needed for good support (SDK code, tests, docs/examples).
+- **Upstream PR target**: upstream is `OpenHands/software-agent-sdk`, PRs target `main`.
+- **Failure classification**: detect “credential/config error” vs “likely SDK bug”; only offer auto-fix by default for the latter (still allow a force option).
 
-Remaining open questions
-- **Key handling for remote runs**: if we use OpenHands Cloud for multi-user, how do we supply provider keys safely (ephemeral, stored, or never leave local machine)?
-- **Key handling for Actions runs**: if we use GitHub Actions for multi-user, do we require an LLM proxy / shared secrets, or can we accept only models reachable with repo-owned credentials?
-- **SDK checkout selection**: should `oh-llm` always use `~/repos/agent-sdk`, or allow choosing a path / git ref per run?
+## Open questions
+
+- **Key handling for OpenHands Cloud runs**: if we delegate multi-user runs to `app.all-hands.dev`, how do we supply provider keys safely (ephemeral pass-through, stored, or never leave local machine via a gateway/proxy)?
+- **Key handling for GitHub Actions runs**: if we delegate runs to CI, do we require an LLM proxy/shared secrets, or accept only models reachable with repo-owned credentials (and potentially self-hosted runners for custom base_urls)?
+- **SDK checkout selection (local mode)**: should `oh-llm` always use `~/repos/agent-sdk`, or allow choosing a path / git ref per run?
