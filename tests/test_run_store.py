@@ -11,7 +11,14 @@ from typer.testing import CliRunner
 
 from oh_llm.cli import ExitCode, app
 from oh_llm.redaction import REDACTED, redactor_from_env_vars
-from oh_llm.run_store import append_log, create_run_dir, read_run_json, write_run_json
+from oh_llm.run_store import (
+    append_log,
+    build_run_record,
+    create_run_dir,
+    default_stage_template,
+    read_run_json,
+    write_run_json,
+)
 from oh_llm.stage_a import StageAOutcome
 
 pytestmark = pytest.mark.unit
@@ -152,3 +159,29 @@ def test_create_run_dir_naming(tmp_path: Path) -> None:
     assert run.run_dir.exists()
     assert "_My_Profile_" in run.run_dir.name
     assert run.run_id in run.run_dir.name
+
+
+def test_build_run_record_has_expected_top_level_keys(tmp_path: Path) -> None:
+    record = build_run_record(
+        run_id="abc123",
+        created_at="2025-01-01T00:00:00+00:00",
+        profile={"name": "demo"},
+        agent_sdk=_AgentSdkInfoLike(path=tmp_path),
+        stages=default_stage_template(),
+    )
+
+    assert record["schema_version"] == 1
+    assert record["run_id"] == "abc123"
+    assert record["created_at"]
+    assert "profile" in record
+    assert "agent_sdk" in record
+    assert "host" in record
+    assert "stages" in record
+    assert set(record["stages"].keys()) >= {"A", "B", "C"}
+
+
+class _AgentSdkInfoLike:
+    def __init__(self, *, path: Path) -> None:
+        self.path = path
+        self.git_sha = None
+        self.git_dirty = None
