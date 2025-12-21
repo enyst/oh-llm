@@ -18,7 +18,11 @@ Prereqs:
 From the repo root:
 
 ```bash
-RUNS_DIR="${OH_LLM_RUNS_DIR:-$HOME/.oh-llm/runs}"
+# Optional: override before starting tmux (panes inherit this):
+# export OH_LLM_RUNS_DIR=/tmp/oh-llm-runs
+
+export OH_LLM_RUNS_DIR="${OH_LLM_RUNS_DIR:-$HOME/.oh-llm/runs}"
+RUNS_DIR="$OH_LLM_RUNS_DIR"
 SESSION="oh_llm_qa"
 
 tmux new-session -d -s "$SESSION" -n cli "uv run oh-llm --help; exec $SHELL"
@@ -31,7 +35,7 @@ tmux attach -t "$SESSION"
 
 Notes:
 - The log tail pane will be empty until at least one run directory exists.
-- If you override runs dir, set `OH_LLM_RUNS_DIR`.
+- If you override runs dir, `export OH_LLM_RUNS_DIR=...` *before* starting tmux.
 
 ## Reviewer checklist (v1)
 
@@ -40,7 +44,7 @@ Run these commands in the CLI pane:
 - `uv run oh-llm --help`
 - `uv run oh-llm sdk info --json`
 - `uv run oh-llm sdk check-import --json` (requires local `agent-sdk` checkout)
-- `OH_LLM_RUNS_DIR=/tmp/oh-llm-runs uv run oh-llm run --profile demo --json`
+- `uv run oh-llm run --profile demo --json`
 
 Expected:
 - CLI commands exit successfully where applicable.
