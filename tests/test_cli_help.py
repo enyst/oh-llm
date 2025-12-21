@@ -3,6 +3,8 @@ from typer.testing import CliRunner
 
 from oh_llm.cli import ExitCode, app
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize(
     "args",

@@ -19,6 +19,11 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "unit: fast, deterministic tests (default for CI)",
+  "integration: requires local dependencies (e.g., agent-sdk checkout) and may require secrets",
+  "e2e: end-to-end workflows; may require external services and secrets",
+]
 
 [tool.ruff]
 line-length = 100
