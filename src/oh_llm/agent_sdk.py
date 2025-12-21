@@ -74,12 +74,13 @@ def is_git_dirty(repo_path: Path) -> bool:
 
 
 def collect_agent_sdk_info(repo_path: Path) -> AgentSdkInfo:
+    uv_is_available = uv_available()
     if not repo_path.exists():
         return AgentSdkInfo(
             path=repo_path,
             git_sha=None,
             git_dirty=None,
-            uv_available=uv_available(),
+            uv_available=uv_is_available,
         )
 
     git_sha: str | None = None
@@ -94,7 +95,7 @@ def collect_agent_sdk_info(repo_path: Path) -> AgentSdkInfo:
         path=repo_path,
         git_sha=git_sha,
         git_dirty=git_dirty,
-        uv_available=uv_available(),
+        uv_available=uv_is_available,
     )
 
 

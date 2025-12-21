@@ -261,7 +261,7 @@ def sdk_check_import(
     try:
         result = json.loads(proc.stdout.strip().splitlines()[-1])
         module_file = result["module_file"]
-    except Exception:
+    except (json.JSONDecodeError, IndexError, KeyError, TypeError):
         module_file = None
 
     _emit(
