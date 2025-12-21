@@ -2,7 +2,7 @@
 
 ## Summary
 
-`oh-llm` is a local-first tool (TUI + small web server) for validating whether a newly released LLM works with the OpenHands Software Agent SDK (`~/repos/agent-sdk`). When a model fails compatibility tests, `oh-llm` launches an OpenHands agent to reproduce, diagnose, patch the SDK, and open an upstream PR against `OpenHands/software-agent-sdk`.
+`oh-llm` is a local-first tool (CLI + TUI) for validating whether a newly released LLM works with the OpenHands Software Agent SDK (`~/repos/agent-sdk`). When a model fails compatibility tests, `oh-llm` launches an OpenHands agent to reproduce, diagnose, patch the SDK, and open an upstream PR against `OpenHands/software-agent-sdk`.
 
 This repo is the “LLM onboarding & compatibility gate” for OpenHands.
 
@@ -48,9 +48,9 @@ New or newly supported LLMs often break in subtle ways when used through the SDK
 - Trigger “auto-fix” (OpenHands agent) when failing
 - Track past runs
 
-2) **Web server + simple web page** (secondary):
-- Authenticated UI for adding/editing profiles and kicking off runs
-- JSON API for automation (future)
+2) **CLI** (also required):
+- Scriptable commands to list profiles, run the suite, and export artifacts
+- The TUI can be a subcommand (e.g. `oh-llm tui`)
 
 ### Core flow: add model → test → (maybe) auto-fix
 
@@ -58,7 +58,9 @@ New or newly supported LLMs often break in subtle ways when used through the SDK
 2) User enters:
    - `model` (any model string supported by litellm; e.g. `anthropic/...`, `openai/...`, `openrouter/...`)
    - `base_url` (optional; “OpenAI-compatible” style endpoint from our perspective)
-   - credentials (API key and/or provider-specific fields supported by the SDK’s `LLM` schema)
+   - credentials reference:
+     - the **name of the environment variable** that holds the API key (e.g. `OPENAI_API_KEY`)
+     - (optionally later) additional provider-specific env vars / fields supported by the SDK’s `LLM` schema
    - optional: “supports tools?”, “supports streaming?”, “responses API?” (mostly auto-detected; user override for troubleshooting)
 3) User clicks “Run compatibility suite”
 4) `oh-llm` runs a staged test suite (see below) using the SDK
@@ -170,7 +172,7 @@ If PR creation fails:
 ### Components
 
 - **TUI app**: local UI for profiles and runs.
-- **HTTP server**: optional API + simple web UI; includes auth.
+- **CLI**: entry point for running suites and automation.
 - **Runner**: executes compatibility suite stages; collects artifacts.
 - **Agent launcher**: runs OpenHands agent for auto-fix in an SDK worktree.
 
@@ -197,38 +199,16 @@ We must avoid leaking API keys into:
 - PR bodies
 
 Preferred approach:
-- Store secrets locally with restrictive permissions (0600) and/or OS keychain.
-- In web server mode, avoid storing provider keys when possible; prefer ephemeral use for a single run.
+- **v1**: do not store provider secrets at rest. Store only the *name* of the environment variable to read at runtime.
 - Always redact secrets from persisted run artifacts.
 
 SDK note: `LLMRegistry.save_profile(..., include_secrets=False)` exists and is a good building block. `oh-llm` should reuse SDK profiles on disk (`~/.openhands/llm-profiles/*.json`) for the non-secret portion of LLM config and inject secrets at runtime.
 
-### Auth (web server)
+### Multi-user (deferred)
 
-v1 suggestion:
-- single-user auth (local password) or “localhost only” binding
-- later: OAuth (GitHub) if multi-user truly needed
-
-Alternative: multi-user via OpenHands Cloud (possible v2)
-- Instead of hosting a multi-user `oh-llm` server, use an existing authenticated service:
-  - run compatibility checks and auto-fix runs as remote jobs/conversations against `app.all-hands.dev` (bearer token auth)
-- Open question: how provider API keys are supplied safely for remote runs (ephemeral pass-through vs storage vs bring-your-own-LLM through a gateway).
-
-Alternative: multi-user via GitHub Actions (possible v2)
-- Run the compatibility suite inside the upstream SDK repo’s CI (or a fork) via `workflow_dispatch`.
-- Upsides:
-  - multi-user access “for free” via GitHub permissions (maintainer team),
-  - results and logs can be attached as workflow artifacts,
-  - easy to link failures to upstream PRs/issues.
-- Main constraints:
-  - **Secrets**: per-user/per-run provider keys cannot be safely provided as dispatch inputs (risk of leaking into logs/event payloads). Practically this requires:
-    - repo/environment secrets (shared), and/or
-    - an LLM proxy (agent-sdk already uses `https://llm-proxy.app.all-hands.dev`) so CI only needs one key, and/or
-    - self-hosted runners with a local secret source.
-  - **Base URL reachability**: hosted runners may not be able to reach internal/VPN endpoints; self-hosted runners may be required for custom gateways.
-  - **Security**: workflows that access secrets for PR code (e.g. `pull_request_target`) need strict guardrails (maintainer-only triggers/labels) to avoid secret exfiltration.
-  - **Iteration latency**: slower feedback loop than local runs (queue + cold starts).
-  - **Auto-fix in CI**: possible (push branch + open PR), but requires careful permissions and redaction discipline.
+We are explicitly **not** solving multi-user auth/hosting in v1. Future deployment options include:
+- OpenHands Cloud delegated runs (bearer auth), if we can solve provider-key handling.
+- GitHub Actions runner, likely requiring an LLM proxy/shared secrets or self-hosted runners for custom base URLs.
 
 ## Observability
 
@@ -245,11 +225,11 @@ Alternative: multi-user via GitHub Actions (possible v2)
 
 ## Milestones (suggested)
 
-1) CLI runner only (no UI): define profile format, run Stage A–B, save artifacts.
-2) TUI: profile editing + run history + view logs.
-3) Auto-fix agent workflow: worktree + OpenHands run + local patch output.
-4) Upstream PR automation: gh integration, fork/branch management.
-5) Web server: auth + basic HTML form + run endpoint.
+1) Local runner (CLI + TUI): define profile format, run Stage A–B, save artifacts.
+2) Auto-fix agent workflow: worktree + OpenHands run + local patch output.
+3) Upstream PR automation: gh integration, fork/branch management.
+4) Polish: run history, artifact viewer, better failure classification UX.
+5) (Optional later) Web server: auth + basic HTML form + run endpoint.
 
 ## Decisions (current)
 
@@ -259,9 +239,10 @@ Alternative: multi-user via GitHub Actions (possible v2)
 - **Auto-fix boundaries**: the agent may change whatever is needed for good support (SDK code, tests, docs/examples).
 - **Upstream PR target**: upstream is `OpenHands/software-agent-sdk`, PRs target `main`.
 - **Failure classification**: detect “credential/config error” vs “likely SDK bug”; only offer auto-fix by default for the latter (still allow a force option).
+- **Implementation (v1)**: Python (matches SDK; easiest to run the suite and integrate agent workflows).
+- **Execution (v1)**: local-only (CLI + TUI). No multi-user hosting in v1.
+- **SDK under test (v1)**: use `~/repos/agent-sdk` (configurable later if needed).
 
 ## Open questions
 
-- **Key handling for OpenHands Cloud runs**: if we delegate multi-user runs to `app.all-hands.dev`, how do we supply provider keys safely (ephemeral pass-through, stored, or never leave local machine via a gateway/proxy)?
-- **Key handling for GitHub Actions runs**: if we delegate runs to CI, do we require an LLM proxy/shared secrets, or accept only models reachable with repo-owned credentials (and potentially self-hosted runners for custom base_urls)?
-- **SDK checkout selection (local mode)**: should `oh-llm` always use `~/repos/agent-sdk`, or allow choosing a path / git ref per run?
+- **Provider auth fields**: beyond an API key env var name, which additional provider-specific fields do we need in v1 (Azure, AWS creds, etc.), and how should they be referenced via env?
