@@ -222,6 +222,22 @@ Alternative: multi-user via OpenHands Cloud (possible v2)
   - run compatibility checks and auto-fix runs as remote jobs/conversations against `app.all-hands.dev` (bearer token auth)
 - Open question: how provider API keys are supplied safely for remote runs (ephemeral pass-through vs storage vs bring-your-own-LLM through a gateway).
 
+Alternative: multi-user via GitHub Actions (possible v2)
+- Run the compatibility suite inside the upstream SDK repo’s CI (or a fork) via `workflow_dispatch`.
+- Upsides:
+  - multi-user access “for free” via GitHub permissions (maintainer team),
+  - results and logs can be attached as workflow artifacts,
+  - easy to link failures to upstream PRs/issues.
+- Main constraints:
+  - **Secrets**: per-user/per-run provider keys cannot be safely provided as dispatch inputs (risk of leaking into logs/event payloads). Practically this requires:
+    - repo/environment secrets (shared), and/or
+    - an LLM proxy (agent-sdk already uses `https://llm-proxy.app.all-hands.dev`) so CI only needs one key, and/or
+    - self-hosted runners with a local secret source.
+  - **Base URL reachability**: hosted runners may not be able to reach internal/VPN endpoints; self-hosted runners may be required for custom gateways.
+  - **Security**: workflows that access secrets for PR code (e.g. `pull_request_target`) need strict guardrails (maintainer-only triggers/labels) to avoid secret exfiltration.
+  - **Iteration latency**: slower feedback loop than local runs (queue + cold starts).
+  - **Auto-fix in CI**: possible (push branch + open PR), but requires careful permissions and redaction discipline.
+
 ## Observability
 
 - Store structured run results in a local directory (per-run folder).
@@ -255,4 +271,5 @@ Alternative: multi-user via OpenHands Cloud (possible v2)
 
 Remaining open questions
 - **Key handling for remote runs**: if we use OpenHands Cloud for multi-user, how do we supply provider keys safely (ephemeral, stored, or never leave local machine)?
+- **Key handling for Actions runs**: if we use GitHub Actions for multi-user, do we require an LLM proxy / shared secrets, or can we accept only models reachable with repo-owned credentials?
 - **SDK checkout selection**: should `oh-llm` always use `~/repos/agent-sdk`, or allow choosing a path / git ref per run?
