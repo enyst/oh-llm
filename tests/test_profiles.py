@@ -123,3 +123,68 @@ def test_profile_add_overwrite_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     )
     assert third.exit_code == ExitCode.OK
 
+
+def test_profile_show_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    runner = CliRunner()
+    result = runner.invoke(app, ["profile", "show", "missing"])
+    assert result.exit_code == ExitCode.RUN_FAILED
+    assert "not found" in result.stdout.lower()
+
+
+def test_profile_list_includes_sdk_only_and_metadata_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    # SDK-only profile
+    sdk_dir = tmp_path / ".openhands" / "llm-profiles"
+    sdk_dir.mkdir(parents=True)
+    (sdk_dir / "sdk_only.json").write_text(
+        json.dumps({"profile_id": "sdk_only", "model": "gpt-5-mini"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    # metadata-only profile
+    meta_dir = tmp_path / ".oh-llm" / "profiles"
+    meta_dir.mkdir(parents=True)
+    (meta_dir / "meta_only.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "profile_id": "meta_only", "api_key_env": "KEY_ENV"},
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["profile", "list", "--json"])
+    assert result.exit_code == ExitCode.OK
+    payload = json.loads(result.stdout)
+    ids = [p["profile_id"] for p in payload["profiles"]]
+    assert ids == ["meta_only", "sdk_only"]
+
+    meta_only = next(p for p in payload["profiles"] if p["profile_id"] == "meta_only")
+    assert meta_only["model"] is None
+    assert meta_only["api_key_env"] == "KEY_ENV"
+
+    sdk_only = next(p for p in payload["profiles"] if p["profile_id"] == "sdk_only")
+    assert sdk_only["model"] == "gpt-5-mini"
+    assert sdk_only["api_key_env"] is None
+
+
+def test_profile_list_ignores_invalid_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    sdk_dir = tmp_path / ".openhands" / "llm-profiles"
+    sdk_dir.mkdir(parents=True)
+    (sdk_dir / "bad id.json").write_text(
+        json.dumps({"profile_id": "bad id", "model": "gpt-5-mini"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["profile", "list", "--json"])
+    assert result.exit_code == ExitCode.OK
+    payload = json.loads(result.stdout)
+    assert payload["profiles"] == []
