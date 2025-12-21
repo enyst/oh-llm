@@ -8,28 +8,28 @@ General workflow guidance for agents working in this repo (tooling + collaborati
 
 Recommended conventions
 - **Single source of truth**: Use **Beads** for task status/priority/dependencies; use **Agent Mail** for conversation, decisions, and attachments (audit).
-- **Shared identifiers**: Use the Beads issue id (e.g., `oh-llm-123`) as the Mail `thread_id` and prefix message subjects with `[oh-llm-123]`.
+- **Shared identifiers**: Use the Beads issue id (e.g., `oh-llm-<id>`, like `oh-llm-530` or `oh-llm-8zy`) as the Mail `thread_id` and prefix message subjects with `[oh-llm-<id>]`.
 - **Reservations**: When starting a task, call `file_reservation_paths(...)` for the affected paths; include the issue id in the `reason` and release on completion.
 
 Typical flow (agents)
 1) **Pick ready work** (Beads)
    - `bd ready --json` → choose one item (highest priority, no blockers)
 2) **Reserve edit surface** (Mail)
-   - `file_reservation_paths(project_key, agent_name, ["path/to/area/**"], ttl_seconds=3600, exclusive=true, reason="oh-llm-123")`
+   - `file_reservation_paths(project_key, agent_name, ["path/to/area/**"], ttl_seconds=3600, exclusive=true, reason="oh-llm-<id>")`
 3) **Announce start** (Mail)
-   - `send_message(..., thread_id="oh-llm-123", subject="[oh-llm-123] Start: <short title>", ack_required=true)`
+   - `send_message(..., thread_id="oh-llm-<id>", subject="[oh-llm-<id>] Start: <short title>", ack_required=true)`
 4) **Work and update**
    - Reply in-thread with progress and attach artifacts/images; keep discussion to one thread per issue id
 5) **Complete and release**
-   - `bd close oh-llm-123 --reason "Completed"` (Beads is status authority)
+   - `bd close oh-llm-<id> --reason "Completed"` (Beads is status authority)
    - `release_file_reservations(project_key, agent_name, paths=["path/to/area/**"])`
-   - Final Mail reply: `[oh-llm-123] Completed` with summary and links
+   - Final Mail reply: `[oh-llm-<id>] Completed` with summary and links
 
 Mapping cheat-sheet
-- Mail `thread_id` ↔ Beads issue id (e.g., `oh-llm-123`)
-- Mail subject: `[oh-llm-123] …`
-- File reservation `reason`: `oh-llm-123`
-- Commit messages (optional): include `oh-llm-123` for traceability
+- Mail `thread_id` ↔ Beads issue id (e.g., `oh-llm-<id>`)
+- Mail subject: `[oh-llm-<id>] …`
+- File reservation `reason`: `oh-llm-<id>`
+- Commit messages (optional): include `oh-llm-<id>` for traceability
 
 Pitfalls to avoid
 - Don’t create or manage tasks in Mail; treat Beads as the single task queue.
@@ -51,11 +51,17 @@ Before opening or updating a PR:
 - Run the relevant local checks for the changes (tests, typecheck, lint, build/packaging if applicable).
 - Ensure CI checks are green on the PR.
 
-Reviews (do not merge without review):
-- Request review via **Agent Mail**:
-  - Send a message to a reviewer with PR link/number + context; set `ack_required=true`.
-  - Prefer keeping the PR discussion in the Beads issue thread (`thread_id=<issue-id>`).
-- If GitHub AI reviewers are enabled for the repo, read and resolve their inline threads (they often comment under “Files changed”).
+Reviews (do not merge without human review):
+- **Required**: request review via **Agent Mail** (human reviewer).
+  - Send the reviewer the PR link/number + context; set `ack_required=true`.
+  - Keep review discussion in the Beads issue thread (`thread_id=<issue-id>`).
+  - If branch protection requires a GitHub approval, the reviewer should also approve on GitHub, but the detailed review notes live in Mail.
+- **Optional (good-to-have)**: GitHub AI reviewers (e.g., Gemini / CodeRabbit).
+  - Treat them as extra eyes; do not substitute them for the human Mail review.
+  - Always read/resolve their inline threads (they often comment under “Files changed”).
+  - Waiting policy:
+    - **Gemini-code-assist**: starts automatically upon PR creation; treat it as “one extra review” once it has posted at least two top-level comments and you’ve checked/resolved its inline threads. Re-trigger with `/gemini review` if needed.
+    - **CodeRabbitAI**: only wait if its ETA is <=10 minutes (pending or rate-limited). If it would block longer than that, proceed without waiting.
 - Right before merging, do a final pass on GitHub:
   - “Conversation” tab: scan top-level comments (including bots).
   - “Files changed” tab: scan/resolve inline review threads.
