@@ -1,0 +1,33 @@
+[project]
+name = "oh-llm"
+version = "0.0.0"
+description = "Local CLI/TUI to validate new LLMs with OpenHands agent-sdk"
+readme = "PRD.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+oh-llm = "oh_llm.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.9.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[build-system]
+requires = ["hatchling>=1.26.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/oh_llm"]
