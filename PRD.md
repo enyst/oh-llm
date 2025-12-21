@@ -56,10 +56,9 @@ New or newly supported LLMs often break in subtle ways when used through the SDK
 
 1) User selects “Add LLM”
 2) User enters:
-   - `provider` (or “auto”)
-   - `model` (e.g. `anthropic/claude-sonnet-4-5-20250929`, `openai/gpt-5-mini`, `openrouter/...`)
-   - `base_url` (optional)
-   - credentials (API key, or provider-specific fields)
+   - `model` (any model string supported by litellm; e.g. `anthropic/...`, `openai/...`, `openrouter/...`)
+   - `base_url` (optional; “OpenAI-compatible” style endpoint from our perspective)
+   - credentials (API key and/or provider-specific fields supported by the SDK’s `LLM` schema)
    - optional: “supports tools?”, “supports streaming?”, “responses API?” (mostly auto-detected; user override for troubleshooting)
 3) User clicks “Run compatibility suite”
 4) `oh-llm` runs a staged test suite (see below) using the SDK
@@ -118,6 +117,8 @@ Purpose: validate tool calling format and parsing (common failure mode).
   - tool call was invoked (native or non-native conversion),
   - tool output is observed by the agent,
   - agent reports a final “TOOL_OK” in natural language.
+
+Note: tool calling is **required** for “works with the agent-sdk”. The SDK has a non-native tool calling compatibility layer (prompt-based conversion) so models that don’t support tool calling natively can still pass Stage C as long as the SDK can reliably translate tool intents into tool invocations.
 
 ### Stage D — Optional advanced gates (toggleable)
 
@@ -204,17 +205,22 @@ We must avoid leaking API keys into:
 - PR bodies
 
 Preferred approach:
-- Store secrets locally with restrictive permissions (0600).
-- In the web server mode, encrypt at rest (key in env or OS keychain).
+- Store secrets locally with restrictive permissions (0600) and/or OS keychain.
+- In web server mode, avoid storing provider keys when possible; prefer ephemeral use for a single run.
 - Always redact secrets from persisted run artifacts.
 
-SDK note: `LLMRegistry.save_profile(..., include_secrets=False)` exists and is a good building block; we can store a “profile” without secrets and supply secrets via env at runtime.
+SDK note: `LLMRegistry.save_profile(..., include_secrets=False)` exists and is a good building block. `oh-llm` should reuse SDK profiles on disk (`~/.openhands/llm-profiles/*.json`) for the non-secret portion of LLM config and inject secrets at runtime.
 
 ### Auth (web server)
 
 v1 suggestion:
 - single-user auth (local password) or “localhost only” binding
 - later: OAuth (GitHub) if multi-user truly needed
+
+Alternative: multi-user via OpenHands Cloud (possible v2)
+- Instead of hosting a multi-user `oh-llm` server, use an existing authenticated service:
+  - run compatibility checks and auto-fix runs as remote jobs/conversations against `app.all-hands.dev` (bearer token auth)
+- Open question: how provider API keys are supplied safely for remote runs (ephemeral pass-through vs storage vs bring-your-own-LLM through a gateway).
 
 ## Observability
 
@@ -239,11 +245,14 @@ v1 suggestion:
 
 ## Open questions (need your answers)
 
-1) **Profile model format**: should `oh-llm` reuse SDK’s `LLMRegistry` on-disk profiles (`~/.openhands/llm-profiles/*.json`), or keep its own profile store?
-2) **Provider scope**: do we assume “OpenAI-compatible” + a few majors (OpenAI/Anthropic/OpenRouter), or truly anything supported by litellm?
-3) **What counts as ‘works’**: are Stage A–C mandatory, or is “no tools needed” acceptable for some use cases?
-4) **Auto-fix boundaries**: should the agent be allowed to change only SDK code, or also docs/examples? Can it add tests?
-5) **Upstream PR target**: confirm upstream is `OpenHands/software-agent-sdk` and whether we always PR against `main`.
-6) **Multi-user web server**: do you actually need multi-user auth soon, or is “localhost only” acceptable for v1?
-7) **Failure classification**: do we want “credential/config error” vs “SDK bug” auto-detection before offering auto-fix?
+1) **Profiles**: reuse SDK `LLMRegistry` profiles on disk for non-secret config; inject secrets at runtime.
+2) **Provider scope**: anything supported by litellm (treated as “OpenAI-compatible” from our perspective), using the SDK `LLM` schema to pass provider-specific fields.
+3) **Definition of “works”**: tool calling is required; Stage A–C are mandatory.
+4) **Auto-fix boundaries**: the agent is encouraged to change whatever is needed for good support (SDK code, tests, docs/examples).
+5) **Upstream PR target**: upstream is `OpenHands/software-agent-sdk`, PRs target `main`.
+6) **Multi-user**: open design choice — either a local-only tool (v1) or “multi-user by delegating runs to OpenHands Cloud” (v2) if we can solve provider-key handling.
+7) **Failure classification**: implement “credential/config error” vs “likely SDK bug” detection; only offer auto-fix by default for the latter (still allow a force option).
 
+Remaining open questions
+- **Key handling for remote runs**: if we use OpenHands Cloud for multi-user, how do we supply provider keys safely (ephemeral, stored, or never leave local machine)?
+- **SDK checkout selection**: should `oh-llm` always use `~/repos/agent-sdk`, or allow choosing a path / git ref per run?
