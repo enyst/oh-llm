@@ -242,7 +242,8 @@ We are explicitly **not** solving multi-user auth/hosting in v1. Future deployme
 - **Implementation (v1)**: Python (matches SDK; easiest to run the suite and integrate agent workflows).
 - **Execution (v1)**: local-only (CLI + TUI). No multi-user hosting in v1.
 - **SDK under test (v1)**: use `~/repos/agent-sdk` (configurable later if needed).
+- **Auth fields (v1)**: only `model`, optional `base_url`, and a single `api_key` read from a user-provided environment variable name.
 
 ## Open questions
 
-- **Provider auth fields**: beyond an API key env var name, which additional provider-specific fields do we need in v1 (Azure, AWS creds, etc.), and how should they be referenced via env?
+None (v1).
