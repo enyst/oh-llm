@@ -114,7 +114,7 @@ Purpose: end-to-end SDK run with tool calling (required).
 
 Note: tool calling is **required** for “works with the agent-sdk”. The SDK includes a non-native tool calling compatibility layer (prompt-based conversion), so models that don’t support tool calling natively can still pass Stage B as long as the SDK can reliably translate tool intents into tool invocations.
 
-### Stage D — Optional advanced gates (toggleable)
+### Stage C — Optional advanced gates (toggleable)
 
 - streaming on/off
 - image input (if model claims vision)
