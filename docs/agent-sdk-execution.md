@@ -4,7 +4,7 @@
 
 To run the SDK reliably, `oh-llm` treats the SDK checkout (`~/repos/agent-sdk` by default) as an **external uv workspace** and executes SDK code in a subprocess:
 
-- `uv --directory $AGENT_SDK_PATH run python ...`
+- `uv --directory $OH_LLM_AGENT_SDK_PATH run python ...`
 
 ## Rationale
 
@@ -21,4 +21,3 @@ To run the SDK reliably, `oh-llm` treats the SDK checkout (`~/repos/agent-sdk` b
 
 - `oh-llm sdk info` prints the configured SDK path + git SHA (when available).
 - `oh-llm sdk check-import` attempts an `import openhands.sdk` using the SDK’s uv environment.
-
