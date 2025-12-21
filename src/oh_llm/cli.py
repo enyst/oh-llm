@@ -214,8 +214,6 @@ def sdk_info(
     lines.append(f"uv available: {info.uv_available}")
 
     _emit(cli_ctx, payload=info.as_json(), text="\n".join(lines))
-    if not info.uv_available:
-        raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
 
 
 @sdk_app.command("check-import")
@@ -250,7 +248,7 @@ def sdk_check_import(
         )
     except AgentSdkError as exc:
         _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
-        raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
 
     if proc.returncode != 0:
         _emit(
@@ -258,7 +256,7 @@ def sdk_check_import(
             payload={"ok": False, "stdout": proc.stdout, "stderr": proc.stderr},
             text=(proc.stderr or proc.stdout or "Failed to import SDK."),
         )
-        raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
 
     try:
         result = json.loads(proc.stdout.strip().splitlines()[-1])

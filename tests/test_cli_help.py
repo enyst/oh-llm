@@ -16,6 +16,9 @@ from oh_llm.cli import ExitCode, app
         ["runs", "list", "--help"],
         ["autofix", "--help"],
         ["autofix", "start", "--help"],
+        ["sdk", "--help"],
+        ["sdk", "info", "--help"],
+        ["sdk", "check-import", "--help"],
         ["tui", "--help"],
     ],
 )
