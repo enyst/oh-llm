@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -10,6 +11,7 @@ from typer.testing import CliRunner
 from oh_llm.cli import ExitCode, app
 from oh_llm.redaction import REDACTED, redactor_from_env_vars
 from oh_llm.run_store import append_log, create_run_dir, read_run_json, write_run_json
+from oh_llm.stage_a import StageAOutcome
 
 pytestmark = pytest.mark.unit
 
@@ -75,6 +77,7 @@ def test_append_log_redacts_secret_values(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_cli_run_creates_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     # Create a deterministic, local "agent-sdk" git repo so the run.json can capture a SHA.
     sdk_repo = tmp_path / "agent-sdk"
     sdk_repo.mkdir()
@@ -84,9 +87,35 @@ def test_cli_run_creates_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     sha = _git(sdk_repo, "rev-parse", "HEAD").stdout.strip()
 
     monkeypatch.setenv("OH_LLM_AGENT_SDK_PATH", str(sdk_repo))
+    monkeypatch.setenv("TEST_API_KEY", "not-a-real-key")
+
+    runner = CliRunner()
+    add_profile = runner.invoke(
+        app,
+        [
+            "profile",
+            "add",
+            "test_profile",
+            "--model",
+            "gpt-5-mini",
+            "--api-key-env",
+            "TEST_API_KEY",
+        ],
+    )
+    assert add_profile.exit_code == ExitCode.OK
+
+    def _fake_stage_a(**kwargs: Any) -> StageAOutcome:
+        return StageAOutcome(
+            ok=True,
+            duration_ms=12,
+            response_preview="Hello",
+            error=None,
+            raw={"ok": True, "duration_ms": 12, "response_preview": "Hello"},
+        )
+
+    monkeypatch.setattr("oh_llm.cli.run_stage_a", _fake_stage_a)
 
     runs_dir = tmp_path / "runs"
-    runner = CliRunner()
     result = runner.invoke(
         app,
         [
@@ -98,7 +127,7 @@ def test_cli_run_creates_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             "--json",
         ],
     )
-    assert result.exit_code == ExitCode.INTERNAL_ERROR
+    assert result.exit_code == ExitCode.OK
 
     payload = json.loads(result.stdout)
     run_dir = Path(payload["run_dir"])
@@ -111,6 +140,7 @@ def test_cli_run_creates_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert record["schema_version"] == 1
     assert record["agent_sdk"]["git_sha"] == sha
     assert set(record["stages"].keys()) >= {"A", "B"}
+    assert record["stages"]["A"]["status"] == "pass"
 
 
 def test_create_run_dir_naming(tmp_path: Path) -> None:

@@ -23,5 +23,8 @@ Top-level keys:
 - `profile` (object; redacted; never contains raw secrets)
 - `agent_sdk` (object: `path`, `git_sha`, `git_dirty`)
 - `host` (object: basic host/python info)
-- `stages` (object: stage key → `{name,status,duration_ms}`; statuses start as `not_run`)
+- `stages` (object: stage key → `{name,status,duration_ms,...}`; statuses start as `not_run`)
 
+Stage-specific keys:
+- `result` (object, optional): stage output summary (redacted)
+- `error` (object, optional): `{classification,type,message,hint}` (redacted)

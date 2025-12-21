@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -25,6 +26,7 @@ from oh_llm.run_store import (
     resolve_runs_dir,
     write_run_json,
 )
+from oh_llm.stage_a import run_stage_a
 
 
 class ExitCode(IntEnum):
@@ -112,10 +114,9 @@ def run(
         help="Environment variable name to redact from logs/artifacts (repeatable).",
     ),
 ) -> None:
-    """Run the compatibility suite for a configured LLM (stub)."""
+    """Run the compatibility suite for a configured LLM."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
 
-    redactor = redactor_from_env_vars(*redact_env)
     resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
 
     agent_sdk_path = resolve_agent_sdk_path()
@@ -124,26 +125,160 @@ def run(
     run_paths = create_run_dir(runs_dir=resolved_runs_dir, profile_name=profile)
     stages = default_stage_template()
 
+    profile_record = get_profile(profile) if profile else None
+    auto_redact: list[str] = []
+    if profile_record and profile_record.api_key_env:
+        auto_redact.append(profile_record.api_key_env)
+    redactor = redactor_from_env_vars(*redact_env, *auto_redact)
+
     record = build_run_record(
         run_id=run_paths.run_id,
         created_at=run_paths.created_at,
-        profile={"name": profile or "unknown", "redact_env": redact_env},
+        profile={
+            "name": profile or "unknown",
+            "redact_env": sorted(set([*redact_env, *auto_redact])),
+            "resolved": profile_record.as_json() if profile_record else None,
+        },
         agent_sdk=sdk_info,
         stages=stages,
     )
     write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
     append_log(
         path=run_paths.log_file,
-        message="run initialized (runner not implemented yet)",
+        message="run initialized",
         redactor=redactor,
     )
 
-    _emit(
-        cli_ctx,
-        payload={"ok": False, "error": "not_implemented", "run_dir": str(run_paths.run_dir)},
-        text=f"Run runner not implemented yet. Artifacts created in {run_paths.run_dir}.",
+    if not profile:
+        stages["A"]["status"] = "fail"
+        stages["A"]["duration_ms"] = 0
+        stages["A"]["error"] = {
+            "classification": "credential_or_config",
+            "type": "ConfigError",
+            "message": "Missing required option: --profile",
+            "hint": (
+                "Create a profile first via `oh-llm profile add ...` "
+                "and re-run with `--profile <id>`."
+            ),
+        }
+        write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
+        append_log(
+            path=run_paths.log_file,
+            message="Stage A: FAIL (missing --profile)",
+            redactor=redactor,
+        )
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "run_dir": str(run_paths.run_dir), "stages": stages},
+            text="Missing --profile (see run.json for details).",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    if profile_record is None:
+        stages["A"]["status"] = "fail"
+        stages["A"]["duration_ms"] = 0
+        stages["A"]["error"] = {
+            "classification": "credential_or_config",
+            "type": "ConfigError",
+            "message": f"Profile not found: {profile}",
+            "hint": "Create it via `oh-llm profile add ...` or check `oh-llm profile list`.",
+        }
+        write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
+        append_log(
+            path=run_paths.log_file,
+            message="Stage A: FAIL (profile not found)",
+            redactor=redactor,
+        )
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "run_dir": str(run_paths.run_dir), "stages": stages},
+            text=f"Profile not found: {profile}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    if not profile_record.model or not profile_record.api_key_env:
+        stages["A"]["status"] = "fail"
+        stages["A"]["duration_ms"] = 0
+        stages["A"]["error"] = {
+            "classification": "credential_or_config",
+            "type": "ConfigError",
+            "message": "Profile is missing required fields (model and/or api_key_env).",
+            "hint": "Recreate the profile via `oh-llm profile add ... --overwrite`.",
+        }
+        write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
+        append_log(
+            path=run_paths.log_file,
+            message="Stage A: FAIL (profile incomplete)",
+            redactor=redactor,
+        )
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "run_dir": str(run_paths.run_dir), "stages": stages},
+            text="Profile is incomplete (missing model/api_key_env).",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    if not os.environ.get(profile_record.api_key_env):
+        stages["A"]["status"] = "fail"
+        stages["A"]["duration_ms"] = 0
+        stages["A"]["error"] = {
+            "classification": "credential_or_config",
+            "type": "ConfigError",
+            "message": f"API key env var not set: {profile_record.api_key_env}",
+            "hint": f"Export `{profile_record.api_key_env}` and re-run.",
+        }
+        write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
+        append_log(
+            path=run_paths.log_file,
+            message="Stage A: FAIL (missing api key env)",
+            redactor=redactor,
+        )
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "run_dir": str(run_paths.run_dir), "stages": stages},
+            text="API key env var not set (see run.json for details).",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    # Stage A: connectivity + basic completion
+    outcome = run_stage_a(
+        agent_sdk_path=agent_sdk_path,
+        artifacts_dir=run_paths.artifacts_dir,
+        model=profile_record.model,
+        base_url=profile_record.base_url,
+        api_key_env=profile_record.api_key_env,
+        timeout_s=30,
+        redactor=redactor,
     )
-    raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
+    stages["A"]["duration_ms"] = outcome.duration_ms
+    if outcome.ok:
+        stages["A"]["status"] = "pass"
+        stages["A"]["result"] = {"response_preview": outcome.response_preview}
+        append_log(path=run_paths.log_file, message="Stage A: PASS", redactor=redactor)
+    else:
+        stages["A"]["status"] = "fail"
+        stages["A"]["error"] = outcome.error or {
+            "classification": "sdk_or_provider_bug",
+            "type": "UnknownError",
+            "message": "Stage A failed.",
+            "hint": "Inspect run artifacts for details.",
+        }
+        append_log(
+            path=run_paths.log_file,
+            message=f"Stage A: FAIL ({stages['A']['error'].get('classification','unknown')})",
+            redactor=redactor,
+        )
+
+    write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
+
+    payload = {"ok": outcome.ok, "run_dir": str(run_paths.run_dir), "stages": stages}
+    if cli_ctx.json_output:
+        _emit(cli_ctx, payload=payload, text="")
+    else:
+        status = "PASS" if outcome.ok else "FAIL"
+        typer.echo(f"Stage A: {status} (artifacts: {run_paths.run_dir})")
+
+    raise typer.Exit(code=ExitCode.OK if outcome.ok else ExitCode.RUN_FAILED)
 
 
 @profile_app.command("list")
