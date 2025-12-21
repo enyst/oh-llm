@@ -15,6 +15,15 @@ from oh_llm.agent_sdk import (
     resolve_agent_sdk_path,
     uv_run_python,
 )
+from oh_llm.redaction import redactor_from_env_vars
+from oh_llm.run_store import (
+    append_log,
+    build_run_record,
+    create_run_dir,
+    default_stage_template,
+    resolve_runs_dir,
+    write_run_json,
+)
 
 
 class ExitCode(IntEnum):
@@ -86,13 +95,52 @@ def run(
         "--json",
         help="Emit machine-readable JSON output for this command.",
     ),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        help="Profile name/identifier (for run naming).",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    redact_env: list[str] = typer.Option(
+        [],
+        "--redact-env",
+        help="Environment variable name to redact from logs/artifacts (repeatable).",
+    ),
 ) -> None:
     """Run the compatibility suite for a configured LLM (stub)."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+
+    redactor = redactor_from_env_vars(*tuple(redact_env))
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+
+    agent_sdk_path = resolve_agent_sdk_path()
+    sdk_info = collect_agent_sdk_info(agent_sdk_path)
+
+    run_paths = create_run_dir(runs_dir=resolved_runs_dir, profile_name=profile)
+    stages = default_stage_template()
+
+    record = build_run_record(
+        run_id=run_paths.run_id,
+        created_at=run_paths.created_at,
+        profile={"name": profile or "unknown", "redact_env": redact_env},
+        agent_sdk=sdk_info,
+        stages=stages,
+    )
+    write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
+    append_log(
+        path=run_paths.log_file,
+        message="run initialized (runner not implemented yet)",
+        redactor=redactor,
+    )
+
     _emit(
         cli_ctx,
-        payload={"ok": False, "error": "not_implemented"},
-        text="Run runner not implemented yet. See PRD.md (Stage A/B).",
+        payload={"ok": False, "error": "not_implemented", "run_dir": str(run_paths.run_dir)},
+        text=f"Run runner not implemented yet. Artifacts created in {run_paths.run_dir}.",
     )
     raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
 

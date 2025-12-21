@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
@@ -39,9 +41,13 @@ def test_cli_help_smoke(args: list[str]) -> None:
         ["tui"],
     ],
 )
-def test_stub_commands_fail_until_implemented(args: list[str]) -> None:
+def test_stub_commands_fail_until_implemented(args: list[str], tmp_path: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(app, args)
+    invoked_args = list(args)
+    if invoked_args == ["run"]:
+        invoked_args.extend(["--runs-dir", str(tmp_path / "runs")])
+
+    result = runner.invoke(app, invoked_args)
     assert result.exit_code == ExitCode.INTERNAL_ERROR
     assert "not implemented" in result.stdout.lower()
 
