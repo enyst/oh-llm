@@ -10,8 +10,6 @@ Recommended conventions
 - **Single source of truth**: Use **Beads** for task status/priority/dependencies; use **Agent Mail** for conversation, decisions, and attachments (audit).
 - **Shared identifiers**: Use the Beads issue id (e.g., `oh-llm-<id>`, like `oh-llm-530` or `oh-llm-8zy`) as the Mail `thread_id` and prefix message subjects with `[oh-llm-<id>]`.
 - **Reservations**: When starting a task, call `file_reservation_paths(...)` for the affected paths; include the issue id in the `reason` and release on completion.
-- **Repo policy (Beads files)**: Keep `.beads/` **local-only** (do not commit). Treat Beads as a personal/local queue and use Agent Mail threads for shared visibility/coordination.
-  - If we ever decide to share Beads via git, batch those updates into an existing “real” PR (never open a PR solely to update Beads status).
 
 Typical flow (agents)
 1) **Pick ready work** (Beads)
@@ -69,7 +67,6 @@ Reviews (do not merge without human review):
   - “Files changed” tab: scan/resolve inline review threads.
   - “Checks”: confirm required checks/reviews are complete (or explicitly waived per repo policy).
 - Merge only when CI is green, review threads are resolved/addressed, and required branch-protection rules are satisfied.
-- Repo setting note: merge commits are disabled; use **squash** (or rebase) merges.
 
 **Optional reviewer workflow** (OpenHands “roasted” review via tmux)
 - Use a clean worktree to avoid clobbering shared branches/uncommitted changes:
