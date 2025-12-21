@@ -8,9 +8,13 @@ We use pytest markers to keep CI deterministic while still allowing opt-in integ
 - `integration`: requires local dependencies (e.g. `~/repos/agent-sdk`) and may require secrets
 - `e2e`: end-to-end workflows; may require external services and secrets
 
+Unmarked tests are treated as unit-by-default and will run in CI (CI only excludes `integration`/`e2e`).
+
 ## Commands
 
-- Unit (CI default):
+- CI default (unit-by-default; excludes integration/e2e):
+  - `uv run pytest -m "not integration and not e2e"`
+- Unit-only (explicitly marked `unit`):
   - `uv run pytest -m unit`
 - Integration (opt-in, local):
   - `uv run pytest -m integration`
@@ -21,4 +25,3 @@ We use pytest markers to keep CI deterministic while still allowing opt-in integ
 
 - Never commit or print API keys.
 - Prefer referencing secrets via environment variables.
-
