@@ -7,8 +7,9 @@ General workflow guidance for agents working in this repo (tooling + collaborati
 **Beads** provides a lightweight, dependency-aware issue database and a CLI (`bd`) for selecting “ready work”, setting priorities, and tracking status. It complements **MCP Agent Mail**’s messaging, audit trail, and file-reservation signals.
 
 Recommended conventions
-- **Single source of truth**: Use **Beads** for task status/priority/dependencies; use **Agent Mail** for conversation, decisions, and attachments (audit).
-- **Shared identifiers**: Use the Beads issue id (e.g., `oh-llm-<id>`, like `oh-llm-530` or `oh-llm-8zy`) as the Mail `thread_id` and prefix message subjects with `[oh-llm-<id>]`.
+- **Beads is local**: Use **Beads** for task status/priority/dependencies **within this shared workspace**. We do **not** commit `.beads/` to git.
+- **Shared visibility**: Use **Agent Mail** for conversation, decisions, and attachments (audit), and include PR links in-thread.
+- **Shared identifiers**: Prefer a stable `thread_id` (e.g., a Beads id like `oh-llm-<id>` if you’re using Beads, otherwise `pr-<number>`). Prefix subjects similarly (e.g., `[oh-llm-<id>] …` or `[pr-42] …`).
 - **Reservations**: When starting a task, call `file_reservation_paths(...)` for the affected paths; include the issue id in the `reason` and release on completion.
 - **Repo policy (Beads files)**: Keep `.beads/` **local-only** (do not commit). Treat Beads as a personal/local queue and use Agent Mail threads for shared visibility/coordination.
   - If we ever decide to share Beads via git, batch those updates into an existing “real” PR (never open a PR solely to update Beads status).
@@ -28,10 +29,10 @@ Typical flow (agents)
    - Final Mail reply: `[oh-llm-<id>] Completed` with summary and links
 
 Mapping cheat-sheet
-- Mail `thread_id` ↔ Beads issue id (e.g., `oh-llm-<id>`)
-- Mail subject: `[oh-llm-<id>] …`
-- File reservation `reason`: `oh-llm-<id>`
-- Commit messages (optional): include `oh-llm-<id>` for traceability
+- Mail `thread_id`: Beads id (`oh-llm-<id>`) or `pr-<number>`
+- Mail subject: `[oh-llm-<id>] …` or `[pr-<number>] …`
+- File reservation `reason`: Beads id or `pr-<number>`
+- Commit messages (optional): include `oh-llm-<id>` or `pr-<number>` for traceability
 
 Pitfalls to avoid
 - Don’t create or manage tasks in Mail; treat Beads as the single task queue.
@@ -53,13 +54,14 @@ Before opening or updating a PR:
 - Run the relevant local checks for the changes (tests, typecheck, lint, build/packaging if applicable).
 - Ensure CI checks are green on the PR.
 
-Reviews (do not merge without human review):
-- **Required**: request review via **Agent Mail** (human reviewer).
+Reviews (do not merge without reviewer approval):
+- **Required**: request review via **Agent Mail** (Agent Reviewer).
   - Send the reviewer the PR link/number + context; set `ack_required=true`.
-  - Keep review discussion in the Beads issue thread (`thread_id=<issue-id>`).
-  - If branch protection requires a GitHub approval, the reviewer should also approve on GitHub, but the detailed review notes live in Mail.
+  - Keep review discussion in one thread (`thread_id=<beads-id>` or `thread_id=pr-<number>`).
+  - Do not merge until the reviewer has explicitly ACK’d the **current diff** in Mail. If scope changes materially (force-push, significant new commits), request a fresh ACK.
+  - If branch protection requires a GitHub approval, the reviewer should also approve on GitHub, but detailed review notes live in Mail.
 - **Optional (good-to-have)**: GitHub AI reviewers (e.g., Gemini / CodeRabbit).
-  - Treat them as extra eyes; do not substitute them for the human Mail review.
+  - Treat them as extra eyes; do not substitute them for the reviewer’s Mail approval.
   - Always read/resolve their inline threads (they often comment under “Files changed”).
   - Waiting policy:
     - **Gemini-code-assist**: starts automatically upon PR creation; treat it as “one extra review” once it has posted at least two top-level comments and you’ve checked/resolved its inline threads. Re-trigger with `/gemini review` if needed.
