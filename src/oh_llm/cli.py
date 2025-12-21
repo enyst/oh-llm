@@ -114,7 +114,7 @@ def run(
     """Run the compatibility suite for a configured LLM (stub)."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
 
-    redactor = redactor_from_env_vars(*tuple(redact_env))
+    redactor = redactor_from_env_vars(*redact_env)
     resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
 
     agent_sdk_path = resolve_agent_sdk_path()

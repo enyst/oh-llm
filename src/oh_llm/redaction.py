@@ -59,7 +59,7 @@ class Redactor:
             return [self.redact_obj(item) for item in obj]
 
         if isinstance(obj, tuple):
-            return [self.redact_obj(item) for item in obj]
+            return tuple(self.redact_obj(item) for item in obj)
 
         if isinstance(obj, dict):
             redacted: dict[str, Any] = {}
@@ -84,4 +84,3 @@ def redactor_from_env_vars(*env_var_names: str) -> Redactor:
         if value:
             values.append(value)
     return Redactor(secret_values=tuple(values))
-

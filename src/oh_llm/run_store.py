@@ -67,8 +67,9 @@ class RunPaths:
 def create_run_dir(*, runs_dir: Path, profile_name: str | None) -> RunPaths:
     runs_dir.mkdir(parents=True, exist_ok=True)
 
-    created_at = _utc_now_iso()
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    created_at = now.isoformat()
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
     run_id = _new_run_id()
     suffix = _slug(profile_name or "unknown")
     name = f"{timestamp}_{suffix}_{run_id}"
