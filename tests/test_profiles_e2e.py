@@ -42,5 +42,16 @@ def test_profile_add_via_uv_cli_creates_files(tmp_path: Path) -> None:
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     assert payload["ok"] is True
 
-    assert (tmp_path / ".openhands" / "llm-profiles" / "demo.json").exists()
-    assert (tmp_path / ".oh-llm" / "profiles" / "demo.json").exists()
+    sdk_path = tmp_path / ".openhands" / "llm-profiles" / "demo.json"
+    meta_path = tmp_path / ".oh-llm" / "profiles" / "demo.json"
+    assert sdk_path.exists()
+    assert meta_path.exists()
+
+    sdk_payload = json.loads(sdk_path.read_text(encoding="utf-8"))
+    assert sdk_payload["profile_id"] == "demo"
+    assert sdk_payload["model"] == "gpt-5-mini"
+    assert "api_key" not in sdk_payload
+
+    meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta_payload["profile_id"] == "demo"
+    assert meta_payload["api_key_env"] == "DEMO_API_KEY"

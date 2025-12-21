@@ -45,8 +45,7 @@ def test_openhands_llm_registry_can_load_oh_llm_profile(
         ],
         env={"HOME": str(tmp_path)},
     )
-    if proc.returncode != 0:
-        raise AssertionError((proc.stdout or "") + (proc.stderr or ""))
+    assert proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
 
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     assert payload["model"] == "gpt-5-mini"
