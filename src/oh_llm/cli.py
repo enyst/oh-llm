@@ -15,6 +15,7 @@ from oh_llm.agent_sdk import (
     resolve_agent_sdk_path,
     uv_run_python,
 )
+from oh_llm.profiles import get_profile, list_profiles, upsert_profile
 from oh_llm.redaction import redactor_from_env_vars
 from oh_llm.run_store import (
     append_log,
@@ -154,28 +155,128 @@ def profile_list(
         help="Emit machine-readable JSON output for this command.",
     ),
 ) -> None:
-    """List known LLM profiles (stub)."""
+    """List known LLM profiles."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
-    _emit(cli_ctx, payload={"profiles": []}, text="No profiles yet (stub).")
+    profiles = list_profiles()
+    if cli_ctx.json_output:
+        _emit(cli_ctx, payload={"profiles": [profile.as_json() for profile in profiles]}, text="")
+        return
+
+    if not profiles:
+        typer.echo("No profiles found.")
+        return
+
+    for profile in profiles:
+        model = profile.model or "(unknown)"
+        base_url = f" base_url={profile.base_url}" if profile.base_url else ""
+        key_env = f" api_key_env={profile.api_key_env}" if profile.api_key_env else ""
+        typer.echo(f"{profile.profile_id}: model={model}{base_url}{key_env}")
 
 
-@profile_app.command("create")
-def profile_create(
+@profile_app.command("add")
+def profile_add(
     ctx: typer.Context,
+    profile_id: str = typer.Argument(..., help="Profile ID (filename stem)."),
+    model: str = typer.Option(..., "--model", help="Model name (litellm model string)."),
+    base_url: str | None = typer.Option(None, "--base-url", help="Optional base URL."),
+    api_key_env: str = typer.Option(
+        ...,
+        "--api-key-env",
+        help="Name of environment variable holding the API key (value is never stored).",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Overwrite existing profile + metadata if present.",
+    ),
     json_output: bool = typer.Option(
         False,
         "--json",
         help="Emit machine-readable JSON output for this command.",
     ),
 ) -> None:
-    """Create an LLM profile (stub)."""
+    """Create an LLM profile without persisting secrets."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    try:
+        record = upsert_profile(
+            profile_id=profile_id,
+            model=model,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            overwrite=overwrite,
+        )
+    except (ValueError, FileExistsError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
     _emit(
         cli_ctx,
-        payload={"ok": False, "error": "not_implemented"},
-        text="Profile creation not implemented yet. (Planned: reuse SDK LLMRegistry.)",
+        payload={"ok": True, "profile": record.as_json()},
+        text=f"Saved profile {record.profile_id}.",
     )
-    raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
+
+
+@profile_app.command("create", hidden=True)
+def profile_create_compat(
+    ctx: typer.Context,
+    profile_id: str = typer.Argument(..., help="Profile ID (filename stem)."),
+    model: str = typer.Option(..., "--model", help="Model name (litellm model string)."),
+    base_url: str | None = typer.Option(None, "--base-url", help="Optional base URL."),
+    api_key_env: str = typer.Option(
+        ...,
+        "--api-key-env",
+        help="Name of environment variable holding the API key (value is never stored).",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Overwrite existing profile + metadata if present.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+) -> None:
+    """Alias for `profile add` (kept for early compatibility)."""
+    profile_add(
+        ctx,
+        profile_id=profile_id,
+        model=model,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        overwrite=overwrite,
+        json_output=json_output,
+    )
+
+
+@profile_app.command("show")
+def profile_show(
+    ctx: typer.Context,
+    profile_id: str = typer.Argument(..., help="Profile ID to show."),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+) -> None:
+    """Show a single LLM profile."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    try:
+        record = get_profile(profile_id)
+    except ValueError as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    if record is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "not_found", "profile_id": profile_id},
+            text=f"Profile not found: {profile_id}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    _emit(cli_ctx, payload={"ok": True, "profile": record.as_json()}, text=record.profile_id)
 
 
 @runs_app.command("list")

@@ -15,7 +15,9 @@ pytestmark = pytest.mark.unit
         ["run", "--help"],
         ["profile", "--help"],
         ["profile", "list", "--help"],
+        ["profile", "add", "--help"],
         ["profile", "create", "--help"],
+        ["profile", "show", "--help"],
         ["runs", "--help"],
         ["runs", "list", "--help"],
         ["autofix", "--help"],
@@ -36,7 +38,6 @@ def test_cli_help_smoke(args: list[str]) -> None:
     "args",
     [
         ["run"],
-        ["profile", "create"],
         ["autofix", "start"],
         ["tui"],
     ],
