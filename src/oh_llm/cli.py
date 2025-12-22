@@ -35,8 +35,8 @@ from oh_llm.runs import (
     resolve_run_dir,
     summarize_run,
 )
-from oh_llm.stage_a import run_stage_a
-from oh_llm.stage_b import run_stage_b
+from oh_llm.stage_a import StageAOutcome, run_stage_a
+from oh_llm.stage_b import StageBOutcome, run_stage_b
 
 
 class ExitCode(IntEnum):
@@ -138,11 +138,22 @@ def run(
         "--stage-b-terminal-type",
         help="Terminal tool backend for Stage B (subprocess or tmux).",
     ),
+    mock: bool = typer.Option(
+        False,
+        "--mock",
+        help="Run in offline mock mode (no network or API keys required).",
+    ),
+    mock_stage_b_mode: str = typer.Option(
+        "native",
+        "--mock-stage-b-mode",
+        help="Mock Stage B mode (native or compat).",
+    ),
 ) -> None:
     """Run the compatibility suite for a configured LLM."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
 
     resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+    mock_enabled = bool(mock) or bool(os.environ.get("OH_LLM_MOCK"))
 
     agent_sdk_path = resolve_agent_sdk_path()
     sdk_info = collect_agent_sdk_info(agent_sdk_path)
@@ -167,7 +178,11 @@ def run(
         agent_sdk=sdk_info,
         stages=stages,
     )
-    record["requested"] = {"stage_b": bool(stage_b)}
+    record["requested"] = {
+        "stage_b": bool(stage_b),
+        "mock": bool(mock_enabled),
+        "mock_stage_b_mode": str(mock_stage_b_mode),
+    }
     write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
     append_log(
         path=run_paths.log_file,
@@ -262,7 +277,7 @@ def run(
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
 
-    if not os.environ.get(profile_record.api_key_env):
+    if not mock_enabled and not os.environ.get(profile_record.api_key_env):
         stages["A"]["status"] = "fail"
         stages["A"]["duration_ms"] = 0
         stages["A"]["error"] = {
@@ -291,15 +306,24 @@ def run(
         raise typer.Exit(code=ExitCode.RUN_FAILED)
 
     # Stage A: connectivity + basic completion
-    outcome = run_stage_a(
-        agent_sdk_path=agent_sdk_path,
-        artifacts_dir=run_paths.artifacts_dir,
-        model=profile_record.model,
-        base_url=profile_record.base_url,
-        api_key_env=profile_record.api_key_env,
-        timeout_s=30,
-        redactor=redactor,
-    )
+    if mock_enabled:
+        outcome = StageAOutcome(
+            ok=True,
+            duration_ms=1,
+            response_preview="MOCK_OK",
+            error=None,
+            raw={"ok": True, "duration_ms": 1, "response_preview": "MOCK_OK", "mock": True},
+        )
+    else:
+        outcome = run_stage_a(
+            agent_sdk_path=agent_sdk_path,
+            artifacts_dir=run_paths.artifacts_dir,
+            model=profile_record.model,
+            base_url=profile_record.base_url,
+            api_key_env=profile_record.api_key_env,
+            timeout_s=30,
+            redactor=redactor,
+        )
     stages["A"]["duration_ms"] = outcome.duration_ms
     if outcome.ok:
         stages["A"]["status"] = "pass"
@@ -341,17 +365,52 @@ def run(
         raise typer.Exit(code=ExitCode.OK if outcome.ok else ExitCode.RUN_FAILED)
 
     # Stage B: end-to-end agent run (tool calling)
-    outcome_b = run_stage_b(
-        agent_sdk_path=agent_sdk_path,
-        artifacts_dir=run_paths.artifacts_dir,
-        model=profile_record.model,
-        base_url=profile_record.base_url,
-        api_key_env=profile_record.api_key_env,
-        timeout_s=60,
-        max_iterations=stage_b_max_iterations,
-        terminal_type=stage_b_terminal_type,
-        redactor=redactor,
-    )
+    if mock_enabled:
+        mode = str(mock_stage_b_mode or "native").strip().lower()
+        if mode not in {"native", "compat"}:
+            mode = "native"
+        raw = {
+            "ok": True,
+            "duration_ms": 1,
+            "tool_invoked": True,
+            "tool_observed": True,
+            "tool_command_preview": "echo TOOL_OK",
+            "tool_output_preview": "TOOL_OK",
+            "final_answer_preview": "TOOL_OK",
+            "mock": True,
+            "mock_mode": mode,
+        }
+        # Match real Stage B behavior by writing the probe result artifact.
+        probe_result_path = run_paths.artifacts_dir / "stage_b_probe_result.json"
+        probe_result_path.write_text(redactor.redact_json(raw), encoding="utf-8")
+        try:
+            probe_result_path.chmod(0o600)
+        except OSError:
+            pass
+
+        outcome_b = StageBOutcome(
+            ok=True,
+            duration_ms=1,
+            tool_invoked=True,
+            tool_observed=True,
+            tool_command_preview="echo TOOL_OK",
+            tool_output_preview="TOOL_OK",
+            final_answer_preview="TOOL_OK",
+            error=None,
+            raw=raw,
+        )
+    else:
+        outcome_b = run_stage_b(
+            agent_sdk_path=agent_sdk_path,
+            artifacts_dir=run_paths.artifacts_dir,
+            model=profile_record.model,
+            base_url=profile_record.base_url,
+            api_key_env=profile_record.api_key_env,
+            timeout_s=60,
+            max_iterations=stage_b_max_iterations,
+            terminal_type=stage_b_terminal_type,
+            redactor=redactor,
+        )
     stages["B"]["duration_ms"] = outcome_b.duration_ms
     if outcome_b.ok:
         stages["B"]["status"] = "pass"
