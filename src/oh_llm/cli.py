@@ -37,6 +37,12 @@ from oh_llm.runs import (
 )
 from oh_llm.stage_a import StageAOutcome, run_stage_a
 from oh_llm.stage_b import StageBOutcome, run_stage_b
+from oh_llm.worktrees import (
+    cleanup_sdk_worktree,
+    create_sdk_worktree,
+    mark_worktree_cleaned,
+    write_worktree_record,
+)
 
 
 class ExitCode(IntEnum):
@@ -851,6 +857,111 @@ def autofix_start(
         text="Auto-fix not implemented yet.",
     )
     raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
+
+
+@autofix_app.command("worktree")
+def autofix_worktree(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+    run: str = typer.Option(
+        ...,
+        "--run",
+        help="Run id or run directory name/prefix to prepare a worktree for.",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    keep_worktree: bool = typer.Option(
+        False,
+        "--keep-worktree",
+        help="Keep the created worktree on disk for debugging (default: clean up).",
+    ),
+    allow_dirty_sdk: bool = typer.Option(
+        False,
+        "--allow-dirty-sdk",
+        help="Allow creating a worktree from a dirty agent-sdk checkout (unsafe).",
+    ),
+    agent_sdk_path: str | None = typer.Option(
+        None,
+        "--agent-sdk-path",
+        help="Path to agent-sdk checkout (default: $OH_LLM_AGENT_SDK_PATH or ~/repos/agent-sdk).",
+    ),
+) -> None:
+    """Create an agent-sdk git worktree for an auto-fix run."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+
+    try:
+        run_dir = resolve_run_dir(resolved_runs_dir, run)
+    except (RunNotFoundError, RunAmbiguousError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    record = read_run_record(run_dir)
+    if record is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json missing or corrupt", "run_dir": str(run_dir)},
+            text=f"run.json missing or corrupt in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    run_id = str(record.get("run_id") or run_dir.name).strip()
+    profile_obj = record.get("profile") if isinstance(record.get("profile"), dict) else {}
+    profile_name = str(profile_obj.get("name") or "unknown").strip()
+
+    resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
+    worktree_path = run_dir / "artifacts" / "autofix_sdk_worktree"
+    worktree_record_path = run_dir / "artifacts" / "autofix_worktree.json"
+
+    created_record = None
+    try:
+        created_record = create_sdk_worktree(
+            agent_sdk_path=resolved_sdk_path,
+            worktree_path=worktree_path,
+            profile_name=profile_name,
+            run_id=run_id,
+            allow_dirty=allow_dirty_sdk,
+            keep_worktree=keep_worktree,
+        )
+
+        final_record = created_record
+        if not keep_worktree:
+            cleanup_sdk_worktree(
+                agent_sdk_path=resolved_sdk_path,
+                worktree_path=worktree_path,
+                branch=created_record.branch,
+            )
+            final_record = mark_worktree_cleaned(created_record)
+
+        write_worktree_record(worktree_record_path, record=final_record)
+
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": True,
+                "run_dir": str(run_dir),
+                "worktree": final_record.as_json(),
+            },
+            text=(
+                f"Prepared agent-sdk worktree: {final_record.worktree_path} "
+                f"(branch {final_record.branch})"
+            ),
+        )
+        raise typer.Exit(code=ExitCode.OK)
+    except (AgentSdkError, ValueError) as exc:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
+            text=str(exc),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
 
 
 @app.command()
