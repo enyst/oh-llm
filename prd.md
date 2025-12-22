@@ -167,10 +167,13 @@ If PR creation fails:
 
 ### Components
 
-- **TUI app**: local UI for profiles and runs.
+**v1**
 - **CLI**: entry point for running suites and automation.
 - **Runner**: executes compatibility suite stages; collects artifacts.
 - **Agent launcher**: runs OpenHands agent for auto-fix in an SDK worktree.
+
+**vNext**
+- **TUI app**: local UI for profiles and runs.
 
 ### Data model (high-level)
 
