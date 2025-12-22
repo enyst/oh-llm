@@ -33,6 +33,7 @@ class OpenHandsArtifacts:
 @dataclass(frozen=True)
 class OpenHandsCliResult:
     args: list[str]
+    mode: str
     exit_code: int
     timed_out: bool
     duration_ms: int
@@ -164,17 +165,7 @@ def run_openhands_cli(
     env = dict(os.environ)
     env.setdefault("NO_COLOR", "1")
 
-    started = time.monotonic()
-    with transcript_path.open("w", encoding="utf-8") as handle:
-        handle.write(redactor.redact_text(f"[{_utc_now_iso()}] openhands_bin: {openhands_bin}\n"))
-        handle.write(redactor.redact_text(f"[{_utc_now_iso()}] cwd: {worktree_path}\n"))
-        if timeout_s is not None:
-            handle.write(redactor.redact_text(f"[{_utc_now_iso()}] timeout_s: {timeout_s}\n"))
-        handle.flush()
-
-        # In practice, `openhands --headless` in the default CLI mode still touches prompt_toolkit
-        # and expects a real terminal. The experimental UI supports true headless execution.
-        args = ["--exp", "--headless", "--always-approve", "-t", task]
+    def _run_once(args: list[str]) -> tuple[str, int, bool]:
         proc = subprocess.Popen(
             [openhands_bin, *args],
             cwd=str(worktree_path),
@@ -197,6 +188,42 @@ def run_openhands_cli(
                 proc.kill()
                 output, _ = proc.communicate(timeout=5)
 
+        exit_code = proc.returncode if proc.returncode is not None else 1
+        return output, int(exit_code), timed_out
+
+    started = time.monotonic()
+    with transcript_path.open("w", encoding="utf-8") as handle:
+        handle.write(redactor.redact_text(f"[{_utc_now_iso()}] openhands_bin: {openhands_bin}\n"))
+        handle.write(redactor.redact_text(f"[{_utc_now_iso()}] cwd: {worktree_path}\n"))
+        if timeout_s is not None:
+            handle.write(redactor.redact_text(f"[{_utc_now_iso()}] timeout_s: {timeout_s}\n"))
+        handle.flush()
+
+        args_exp = ["--exp", "--headless", "--always-approve", "-t", task]
+        args_plain = ["--headless", "--always-approve", "-t", task]
+
+        # Prefer `--exp --headless` (works in non-TTY); fall back for older OpenHands builds that
+        # may not support `--exp`.
+        output, exit_code, timed_out = _run_once(args_exp)
+        mode = "exp_headless"
+        unsupported_exp = any(
+            marker in output
+            for marker in (
+                "unrecognized arguments: --exp",
+                "unknown option: --exp",
+                "unknown option '--exp'",
+                "No such option: --exp",
+            )
+        )
+        if exit_code != 0 and unsupported_exp:
+            handle.write(
+                redactor.redact_text(
+                    f"[{_utc_now_iso()}] retrying without --exp due to unsupported flag\n"
+                )
+            )
+            output, exit_code, timed_out = _run_once(args_plain)
+            mode = "headless"
+
         duration_ms = int((time.monotonic() - started) * 1000)
         if output:
             handle.write(redactor.redact_text(output))
@@ -205,7 +232,6 @@ def run_openhands_cli(
                 redactor.redact_text(f"\n[{_utc_now_iso()}] timeout reached; terminating\n")
             )
 
-        exit_code = proc.returncode if proc.returncode is not None else 1
         handle.write(
             redactor.redact_text(
                 f"\n[{_utc_now_iso()}] exit_code: {exit_code} (duration_ms={duration_ms})\n"
@@ -218,8 +244,9 @@ def run_openhands_cli(
         pass
 
     return OpenHandsCliResult(
-        args=args,
-        exit_code=int(exit_code),
+        args=args_exp if mode == "exp_headless" else args_plain,
+        mode=mode,
+        exit_code=exit_code,
         timed_out=timed_out,
         duration_ms=duration_ms,
         transcript_path=transcript_path,
@@ -248,6 +275,7 @@ def write_openhands_run_record(
     output_path: Path,
     openhands_bin: str,
     openhands_args: list[str],
+    openhands_mode: str,
     worktree_path: Path,
     context_path: Path,
     transcript_path: Path,
@@ -267,6 +295,7 @@ def write_openhands_run_record(
         "openhands": {
             "bin": openhands_bin,
             "args": list(openhands_args),
+            "mode": openhands_mode,
             "cwd": str(worktree_path),
             "exit_code": exit_code,
             "timed_out": timed_out,
@@ -332,6 +361,7 @@ def run_openhands_agent(
         output_path=run_record_path,
         openhands_bin=openhands_bin,
         openhands_args=result.args,
+        openhands_mode=result.mode,
         worktree_path=worktree_path,
         context_path=context_path,
         transcript_path=result.transcript_path,
