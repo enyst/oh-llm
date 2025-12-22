@@ -50,25 +50,18 @@ New or newly supported LLMs often break in subtle ways when used through the SDK
 
 ### Core flow: add model → test → (maybe) auto-fix
 
-1) User selects “Add LLM”
-2) User enters:
-   - `model` (any model string supported by litellm; e.g. `anthropic/...`, `openai/...`, `openrouter/...`)
-   - `base_url` (optional; “OpenAI-compatible” style endpoint from our perspective)
-   - credentials reference:
-     - the **name of the environment variable** that holds the API key (e.g. `OPENAI_API_KEY`)
-     - (optionally later) additional provider-specific env vars / fields supported by the SDK’s `LLM` schema
-   - optional: “supports tools?”, “supports streaming?”, “responses API?” (mostly auto-detected; user override for troubleshooting)
-3) User clicks “Run compatibility suite”
-4) `oh-llm` runs a staged test suite (see below) using the SDK
-5) UI shows a clear status per stage:
-   - ✅ Pass
-   - ❌ Fail (with error + captured context)
-6) If fail: UI offers “Run auto-fix agent”
-7) Auto-fix agent produces:
-   - a reproducible minimal failing script (artifact)
-   - a patch against `~/repos/agent-sdk`
-   - an upstream PR URL (or a local branch if PR creation fails)
-8) UI displays the PR link and a human-readable summary of what changed.
+1) Create a profile (non-secret config stored; secrets referenced by env var name only):
+   - `oh-llm profile add <id> --model <litellm-model> [--base-url <url>] --api-key-env <ENV_VAR_NAME>`
+2) Export the API key for the chosen env var in your shell.
+3) Run the compatibility suite:
+   - v1 smoke: `oh-llm run --profile <id>` (Stage A)
+   - full compatibility: `oh-llm run --profile <id> --stage-b` (Stage A + Stage B)
+4) Inspect results:
+   - terminal output + `run.json`, logs, and artifacts under the run directory
+5) If failing and it looks like an SDK incompatibility:
+   - launch an auto-fix agent run (v1 planned) that reproduces, patches `~/repos/agent-sdk`, and opens an upstream PR
+
+In vNext, the TUI provides the same flow via forms/buttons, plus run browsing.
 
 ### Output expectations
 
