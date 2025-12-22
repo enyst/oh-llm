@@ -20,6 +20,7 @@ pytestmark = pytest.mark.unit
         ["profile", "show", "--help"],
         ["runs", "--help"],
         ["runs", "list", "--help"],
+        ["runs", "show", "--help"],
         ["autofix", "--help"],
         ["autofix", "start", "--help"],
         ["sdk", "--help"],
