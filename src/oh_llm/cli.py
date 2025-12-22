@@ -29,7 +29,8 @@ from oh_llm.run_store import (
 from oh_llm.runs import (
     RunAmbiguousError,
     RunNotFoundError,
-    RunSummary,
+    list_run_dirs,
+    read_run_record,
     resolve_run_dir,
     summarize_run,
 )
@@ -508,17 +509,10 @@ def runs_list(
     """List previous runs."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
     resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
-    if not resolved_runs_dir.exists():
-        summaries: list[RunSummary] = []
-    else:
-        summaries = [
-            summarize_run(run_dir)
-            for run_dir in sorted(
-                (p for p in resolved_runs_dir.iterdir() if p.is_dir()),
-                key=lambda p: p.name,
-                reverse=True,
-            )[: max(limit, 0)]
-        ]
+    summaries = [
+        summarize_run(run_dir)
+        for run_dir in list_run_dirs(resolved_runs_dir)[: max(limit, 0)]
+    ]
 
     if cli_ctx.json_output:
         _emit(cli_ctx, payload={"runs": [s.as_json() for s in summaries]}, text="")
@@ -571,7 +565,14 @@ def runs_show(
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
 
-    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    payload = read_run_record(run_dir)
+    if payload is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json corrupt", "run_dir": str(run_dir)},
+            text=f"run.json corrupt in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
     if cli_ctx.json_output:
         _emit(cli_ctx, payload={"ok": True, "run_dir": str(run_dir), "run": payload}, text="")
         return

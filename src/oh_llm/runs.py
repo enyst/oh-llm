@@ -59,10 +59,13 @@ def _compute_status(stage_statuses: dict[str, str]) -> str:
         return "fail"
     if any(v not in {"pass", "not_run"} for v in statuses):
         return "unknown"
-    if any(v == "not_run" for v in statuses):
-        return "partial"
-    if statuses and all(v == "pass" for v in statuses):
+
+    stage_a = stage_statuses.get("A")
+    if stage_a == "pass":
+        # Treat optional stages as informational; a successful Stage A is a successful run.
         return "pass"
+    if stage_a == "not_run":
+        return "partial"
     return "unknown"
 
 
@@ -70,14 +73,13 @@ def summarize_run(run_dir: Path) -> RunSummary:
     record = read_run_record(run_dir) or {}
     stages = record.get("stages") if isinstance(record.get("stages"), dict) else {}
 
-    stage_statuses: dict[str, str] = {}
-    if isinstance(stages, dict):
-        for key, value in stages.items():
-            if not isinstance(key, str) or not isinstance(value, dict):
-                continue
-            status = value.get("status")
-            if isinstance(status, str):
-                stage_statuses[key] = status
+    stage_statuses = {
+        key: value.get("status")
+        for key, value in stages.items()
+        if isinstance(key, str)
+        and isinstance(value, dict)
+        and isinstance(value.get("status"), str)
+    }
 
     profile_name: str | None = None
     profile = record.get("profile")
@@ -109,17 +111,20 @@ def resolve_run_dir(runs_dir: Path, run_ref: str) -> Path:
         raise RunNotFoundError("Missing run reference.")
 
     candidates: list[Path] = []
+    records: dict[Path, dict[str, Any] | None] = {}
     for run_dir in list_run_dirs(runs_dir):
+        record = read_run_record(run_dir)
+        records[run_dir] = record
+
         if run_dir.name == run_ref or run_dir.name.startswith(run_ref):
             candidates.append(run_dir)
             continue
 
-        record = read_run_record(run_dir)
-        if record and record.get("run_id") == run_ref:
+        run_id = record.get("run_id") if isinstance(record, dict) else None
+        if run_id == run_ref:
             candidates.append(run_dir)
             continue
 
-        run_id = record.get("run_id") if record else None
         if isinstance(run_id, str) and run_id.startswith(run_ref):
             candidates.append(run_dir)
 
@@ -131,11 +136,7 @@ def resolve_run_dir(runs_dir: Path, run_ref: str) -> Path:
     if len(exact_name) == 1:
         return exact_name[0]
 
-    exact_id = []
-    for c in candidates:
-        rec = read_run_record(c) or {}
-        if rec.get("run_id") == run_ref:
-            exact_id.append(c)
+    exact_id = [c for c in candidates if (records.get(c) or {}).get("run_id") == run_ref]
     if len(exact_id) == 1:
         return exact_id[0]
 
@@ -145,4 +146,3 @@ def resolve_run_dir(runs_dir: Path, run_ref: str) -> Path:
 
     hint = ", ".join([c.name for c in candidates[:5]])
     raise RunAmbiguousError(f"Run reference is ambiguous: {run_ref} (matches: {hint} …)")
-

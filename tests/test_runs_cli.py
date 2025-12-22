@@ -71,7 +71,7 @@ def test_runs_list_and_show(tmp_path: Path) -> None:
     assert listed.exit_code == ExitCode.OK
     payload = json.loads(listed.stdout)
     assert payload["runs"][0]["run_id"] == "bbbb2222cccc"
-    assert payload["runs"][0]["status"] == "partial"
+    assert payload["runs"][0]["status"] == "pass"
     assert payload["runs"][0]["stages"]["B"] == "pass"
 
     shown = runner.invoke(
@@ -109,3 +109,21 @@ def test_runs_show_ambiguous_prefix(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert "ambiguous" in payload["error"].lower()
+
+
+def test_runs_show_corrupt_run_json(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+
+    run_dir = runs_dir / "20250101_000000_demo_badjson"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    (run_dir / "run.json").write_text("{not valid json", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["runs", "show", run_dir.name, "--runs-dir", str(runs_dir), "--json"]
+    )
+    assert result.exit_code == ExitCode.RUN_FAILED
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["error"] == "run.json corrupt"
