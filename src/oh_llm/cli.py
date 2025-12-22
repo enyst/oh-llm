@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -17,6 +18,7 @@ from oh_llm.agent_sdk import (
     uv_run_python,
 )
 from oh_llm.autofix_capsule import extract_redact_env, write_capsule_artifacts
+from oh_llm.autofix_openhands import OpenHandsError, resolve_openhands_bin, run_openhands_agent
 from oh_llm.failures import failure_from_stages, update_run_failure
 from oh_llm.profiles import get_profile, list_profiles, upsert_profile
 from oh_llm.redaction import Redactor, redactor_from_env_vars
@@ -1023,6 +1025,179 @@ def autofix_capsule(
             },
         },
         text=f"Wrote capsule artifacts under: {run_dir / 'artifacts'}",
+    )
+    raise typer.Exit(code=ExitCode.OK)
+
+@autofix_app.command("agent")
+def autofix_agent(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+    run: str = typer.Option(
+        ...,
+        "--run",
+        help="Run id or run directory name/prefix to auto-fix.",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    agent_sdk_path: str | None = typer.Option(
+        None,
+        "--agent-sdk-path",
+        help="Path to agent-sdk checkout (default: $OH_LLM_AGENT_SDK_PATH or ~/repos/agent-sdk).",
+    ),
+    allow_dirty_sdk: bool = typer.Option(
+        False,
+        "--allow-dirty-sdk",
+        help="Allow creating a worktree from a dirty agent-sdk checkout (unsafe).",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Override safety gating for credential/config failures.",
+    ),
+    openhands_bin: str = typer.Option(
+        "openhands",
+        "--openhands-bin",
+        help="OpenHands CLI executable (default: openhands on PATH).",
+    ),
+    redact_env: list[str] = typer.Option(
+        [],
+        "--redact-env",
+        help="Environment variable name to redact from transcript/diff artifacts (repeatable).",
+    ),
+) -> None:
+    """Run an OpenHands agent in an agent-sdk worktree and capture redacted artifacts."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+
+    try:
+        run_dir = resolve_run_dir(resolved_runs_dir, run)
+    except (RunNotFoundError, RunAmbiguousError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    record = read_run_record(run_dir)
+    if record is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json missing or corrupt", "run_dir": str(run_dir)},
+            text=f"run.json missing or corrupt in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    failure = record.get("failure")
+    if not isinstance(failure, dict):
+        stages = record.get("stages") if isinstance(record.get("stages"), dict) else {}
+        failure = failure_from_stages(stages)
+
+    classification = failure.get("classification") if isinstance(failure, dict) else "unknown"
+    if classification == "credential_or_config" and not force:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "refused",
+                "reason": "credential_or_config",
+                "run_dir": str(run_dir),
+                "failure": failure,
+            },
+            text=(
+                "Refusing to auto-fix a credential/config failure by default. "
+                "Fix credentials/config and re-run, or pass --force."
+            ),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    redaction_names = sorted(set([*extract_redact_env(record), *redact_env]))
+    redactor = redactor_from_env_vars(*redaction_names)
+
+    try:
+        resolved_openhands = resolve_openhands_bin(openhands_bin)
+    except OpenHandsError as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    # Ensure worktree exists (create if missing).
+    resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
+    worktree_path = run_dir / "artifacts" / "autofix_sdk_worktree"
+    worktree_record_path = run_dir / "artifacts" / "autofix_worktree.json"
+    worktree_record: dict[str, Any] | None = None
+
+    if worktree_record_path.exists():
+        try:
+            worktree_record = json.loads(worktree_record_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            worktree_record = None
+
+    if not worktree_path.exists():
+        run_id = str(record.get("run_id") or run_dir.name).strip()
+        profile_obj = record.get("profile") if isinstance(record.get("profile"), dict) else {}
+        profile_name = str(profile_obj.get("name") or "unknown").strip()
+        created = create_sdk_worktree(
+            agent_sdk_path=resolved_sdk_path,
+            worktree_path=worktree_path,
+            profile_name=profile_name,
+            run_id=run_id,
+            allow_dirty=allow_dirty_sdk,
+            keep_worktree=True,
+        )
+        write_worktree_record(worktree_record_path, record=created)
+        worktree_record = created.as_json()
+
+    if not worktree_path.exists():
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "worktree_missing", "worktree_path": str(worktree_path)},
+            text=f"Worktree missing: {worktree_path}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    # Ensure capsule artifacts exist; use them as context for the OpenHands agent.
+    capsule_artifacts = write_capsule_artifacts(
+        run_dir=run_dir,
+        run_record=record,
+        redactor=redactor,
+    )
+
+    try:
+        artifacts = run_openhands_agent(
+            run_dir=run_dir,
+            worktree_path=worktree_path,
+            capsule_md_path=capsule_artifacts.capsule_md,
+            repro_script_path=capsule_artifacts.repro_script,
+            worktree_record=worktree_record,
+            run_record=record,
+            openhands_bin=resolved_openhands,
+            redactor=redactor,
+        )
+    except (OpenHandsError, AgentSdkError, OSError, subprocess.SubprocessError) as exc:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
+            text=str(exc),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    _emit(
+        cli_ctx,
+        payload={
+            "ok": True,
+            "run_dir": str(run_dir),
+            "worktree_path": str(worktree_path),
+            "artifacts": {
+                "context_md": str(artifacts.context_md),
+                "transcript_log": str(artifacts.transcript_log),
+                "diff_patch": str(artifacts.diff_patch),
+                "run_record_json": str(artifacts.run_record_json),
+            },
+        },
+        text=f"Wrote OpenHands auto-fix artifacts under: {run_dir / 'artifacts'}",
     )
     raise typer.Exit(code=ExitCode.OK)
 
