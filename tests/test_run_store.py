@@ -151,7 +151,7 @@ def test_cli_run_creates_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     record = read_run_json(run_dir / "run.json")
     assert record["schema_version"] == 1
     assert record["oh_llm"]["version"] == __version__
-    assert re.fullmatch(r"[0-9a-f]{40}", str(record["oh_llm"]["git_sha"] or ""))
+    assert re.fullmatch(r"[0-9a-f]{40}", record["oh_llm"]["git_sha"] or "")
     assert record["oh_llm"]["git_dirty"] in {True, False}
     assert record["agent_sdk"]["git_sha"] == sha
     assert set(record["stages"].keys()) >= {"A", "B"}
