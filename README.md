@@ -28,12 +28,15 @@ uv run oh-llm --help
 Create a profile (no secrets stored on disk):
 
 ```bash
-export MY_LLM_API_KEY="..."
+export MY_LLM_API_KEY="YOUR_API_KEY_VALUE"  # value is never stored by oh-llm
 uv run oh-llm profile add demo \
   --model "gpt-5-mini" \
-  --base-url "https://example.invalid" \
   --api-key-env MY_LLM_API_KEY
 ```
+
+Notes:
+- `--base-url` is optional; use it for proxies/self-hosted providers, otherwise omit it.
+- The profile stores only the **env var name** (`MY_LLM_API_KEY`), not the value.
 
 Run Stage A (smoke):
 
@@ -56,8 +59,8 @@ uv run oh-llm run --profile demo --stage-b --json --redact-env MY_LLM_API_KEY
 ## Where data lives
 
 - Runs: `~/.oh-llm/runs` (override with `OH_LLM_RUNS_DIR` or `oh-llm run --runs-dir ...`)
-- Profiles (SDK, no secrets): `~/.openhands/llm-profiles/<profile_id>.json`
-- Profile metadata (env var name only): `~/.oh-llm/profiles/<profile_id>.json`
+- Profiles (SDK, no secrets): `~/.openhands/llm-profiles/<profile_id>.json` (written by `oh-llm profile add`)
+- Profile metadata (env var name only): `~/.oh-llm/profiles/<profile_id>.json` (written by `oh-llm profile add`)
 
 ## Safety
 
