@@ -27,6 +27,7 @@ from oh_llm.run_store import (
     write_run_json,
 )
 from oh_llm.stage_a import run_stage_a
+from oh_llm.stage_b import run_stage_b
 
 
 class ExitCode(IntEnum):
@@ -112,6 +113,21 @@ def run(
         [],
         "--redact-env",
         help="Environment variable name to redact from logs/artifacts (repeatable).",
+    ),
+    stage_b: bool = typer.Option(
+        False,
+        "--stage-b",
+        help="Run Stage B end-to-end tool calling test (recommended for full compatibility).",
+    ),
+    stage_b_max_iterations: int = typer.Option(
+        50,
+        "--stage-b-max-iterations",
+        help="Max agent iterations for Stage B (if enabled).",
+    ),
+    stage_b_terminal_type: str | None = typer.Option(
+        "subprocess",
+        "--stage-b-terminal-type",
+        help="Terminal tool backend for Stage B (subprocess or tmux).",
     ),
 ) -> None:
     """Run the compatibility suite for a configured LLM."""
@@ -271,14 +287,63 @@ def run(
 
     write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
 
-    payload = {"ok": outcome.ok, "run_dir": str(run_paths.run_dir), "stages": stages}
+    if not outcome.ok or not stage_b:
+        payload = {"ok": outcome.ok, "run_dir": str(run_paths.run_dir), "stages": stages}
+        if cli_ctx.json_output:
+            _emit(cli_ctx, payload=payload, text="")
+        else:
+            status = "PASS" if outcome.ok else "FAIL"
+            typer.echo(f"Stage A: {status} (artifacts: {run_paths.run_dir})")
+        raise typer.Exit(code=ExitCode.OK if outcome.ok else ExitCode.RUN_FAILED)
+
+    # Stage B: end-to-end agent run (tool calling)
+    outcome_b = run_stage_b(
+        agent_sdk_path=agent_sdk_path,
+        artifacts_dir=run_paths.artifacts_dir,
+        model=profile_record.model,
+        base_url=profile_record.base_url,
+        api_key_env=profile_record.api_key_env,
+        timeout_s=60,
+        max_iterations=stage_b_max_iterations,
+        terminal_type=stage_b_terminal_type,
+        redactor=redactor,
+    )
+    stages["B"]["duration_ms"] = outcome_b.duration_ms
+    if outcome_b.ok:
+        stages["B"]["status"] = "pass"
+        stages["B"]["result"] = {
+            "tool_invoked": outcome_b.tool_invoked,
+            "tool_observed": outcome_b.tool_observed,
+            "tool_command_preview": outcome_b.tool_command_preview,
+            "tool_output_preview": outcome_b.tool_output_preview,
+            "final_answer_preview": outcome_b.final_answer_preview,
+        }
+        append_log(path=run_paths.log_file, message="Stage B: PASS", redactor=redactor)
+    else:
+        stages["B"]["status"] = "fail"
+        stages["B"]["error"] = outcome_b.error or {
+            "classification": "sdk_or_provider_bug",
+            "type": "UnknownError",
+            "message": "Stage B failed.",
+            "hint": "Inspect run artifacts for details.",
+        }
+        append_log(
+            path=run_paths.log_file,
+            message=f"Stage B: FAIL ({stages['B']['error'].get('classification','unknown')})",
+            redactor=redactor,
+        )
+
+    write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
+
+    ok = stages["A"]["status"] == "pass" and stages["B"]["status"] == "pass"
+    payload = {"ok": ok, "run_dir": str(run_paths.run_dir), "stages": stages}
     if cli_ctx.json_output:
         _emit(cli_ctx, payload=payload, text="")
     else:
-        status = "PASS" if outcome.ok else "FAIL"
-        typer.echo(f"Stage A: {status} (artifacts: {run_paths.run_dir})")
+        typer.echo(f"Stage A: PASS (artifacts: {run_paths.run_dir})")
+        typer.echo(f"Stage B: {'PASS' if ok else 'FAIL'} (artifacts: {run_paths.run_dir})")
 
-    raise typer.Exit(code=ExitCode.OK if outcome.ok else ExitCode.RUN_FAILED)
+    raise typer.Exit(code=ExitCode.OK if ok else ExitCode.RUN_FAILED)
 
 
 @profile_app.command("list")
