@@ -16,6 +16,7 @@ from oh_llm.agent_sdk import (
     resolve_agent_sdk_path,
     uv_run_python,
 )
+from oh_llm.autofix_capsule import extract_redact_env, write_capsule_artifacts
 from oh_llm.failures import failure_from_stages, update_run_failure
 from oh_llm.profiles import get_profile, list_profiles, upsert_profile
 from oh_llm.redaction import Redactor, redactor_from_env_vars
@@ -962,6 +963,68 @@ def autofix_worktree(
             text=str(exc),
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+@autofix_app.command("capsule")
+def autofix_capsule(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+    run: str = typer.Option(
+        ...,
+        "--run",
+        help="Run id or run directory name/prefix to generate artifacts for.",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    redact_env: list[str] = typer.Option(
+        [],
+        "--redact-env",
+        help="Environment variable name to redact from capsule artifacts (repeatable).",
+    ),
+) -> None:
+    """Generate a repro harness + error capsule for an existing run."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+
+    try:
+        run_dir = resolve_run_dir(resolved_runs_dir, run)
+    except (RunNotFoundError, RunAmbiguousError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    record = read_run_record(run_dir)
+    if record is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json missing or corrupt", "run_dir": str(run_dir)},
+            text=f"run.json missing or corrupt in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    redaction_names = sorted(set([*extract_redact_env(record), *redact_env]))
+    redactor = redactor_from_env_vars(*redaction_names)
+    artifacts = write_capsule_artifacts(run_dir=run_dir, run_record=record, redactor=redactor)
+
+    _emit(
+        cli_ctx,
+        payload={
+            "ok": True,
+            "run_dir": str(run_dir),
+            "artifacts": {
+                "capsule_json": str(artifacts.capsule_json),
+                "capsule_md": str(artifacts.capsule_md),
+                "repro_script": str(artifacts.repro_script),
+            },
+        },
+        text=f"Wrote capsule artifacts under: {run_dir / 'artifacts'}",
+    )
+    raise typer.Exit(code=ExitCode.OK)
 
 
 @app.command()
