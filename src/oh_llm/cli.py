@@ -57,6 +57,9 @@ runs_app = typer.Typer(no_args_is_help=True)
 autofix_app = typer.Typer(no_args_is_help=True)
 sdk_app = typer.Typer(no_args_is_help=True)
 
+_STAGE_B_TERMINAL_TYPES: set[str] = {"subprocess", "tmux"}
+_STAGE_B_MAX_ITERATIONS_MAX = 200
+
 
 def _ctx(ctx: typer.Context) -> CliContext:
     obj = ctx.obj
@@ -77,6 +80,30 @@ def _ctx_with_json_override(ctx: typer.Context, *, json_output: bool) -> CliCont
     if json_output:
         return CliContext(json_output=True, redactor=base.redactor)
     return base
+
+
+def _normalize_stage_b_terminal_type(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "subprocess"
+    return raw
+
+
+def _validate_stage_b_options(*, terminal_type: str | None, max_iterations: int) -> tuple[str, int]:
+    normalized_terminal_type = _normalize_stage_b_terminal_type(terminal_type)
+    if normalized_terminal_type not in _STAGE_B_TERMINAL_TYPES:
+        raise ValueError(
+            "Invalid value for --stage-b-terminal-type. "
+            f"Expected one of: {', '.join(sorted(_STAGE_B_TERMINAL_TYPES))}."
+        )
+
+    if max_iterations < 1 or max_iterations > _STAGE_B_MAX_ITERATIONS_MAX:
+        raise ValueError(
+            "Invalid value for --stage-b-max-iterations. "
+            f"Expected an integer between 1 and {_STAGE_B_MAX_ITERATIONS_MAX}."
+        )
+
+    return normalized_terminal_type, max_iterations
 
 
 @app.callback()
@@ -184,6 +211,8 @@ def run(
         "stage_b": bool(stage_b),
         "mock": bool(mock_enabled),
         "mock_stage_b_mode": str(mock_stage_b_mode),
+        "stage_b_terminal_type": stage_b_terminal_type,
+        "stage_b_max_iterations": int(stage_b_max_iterations),
     }
     write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
     append_log(
@@ -306,6 +335,43 @@ def run(
             text="API key env var not set (see run.json for details).",
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    if stage_b:
+        try:
+            stage_b_terminal_type, stage_b_max_iterations = _validate_stage_b_options(
+                terminal_type=stage_b_terminal_type,
+                max_iterations=stage_b_max_iterations,
+            )
+        except ValueError as exc:
+            stages["B"]["status"] = "fail"
+            stages["B"]["duration_ms"] = 0
+            stages["B"]["error"] = {
+                "classification": "credential_or_config",
+                "type": "ConfigError",
+                "message": str(exc),
+                "hint": (
+                    "Use `--stage-b-terminal-type subprocess` or `--stage-b-terminal-type tmux`, "
+                    "and set `--stage-b-max-iterations` to a small positive integer."
+                ),
+            }
+            update_run_failure(record)
+            write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
+            append_log(
+                path=run_paths.log_file,
+                message="Stage B: FAIL (invalid options)",
+                redactor=redactor,
+            )
+            _emit(
+                cli_ctx,
+                payload={
+                    "ok": False,
+                    "run_dir": str(run_paths.run_dir),
+                    "stages": stages,
+                    "failure": record.get("failure"),
+                },
+                text=str(exc),
+            )
+            raise typer.Exit(code=ExitCode.RUN_FAILED)
 
     # Stage A: connectivity + basic completion
     if mock_enabled:

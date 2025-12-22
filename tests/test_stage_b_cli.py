@@ -159,3 +159,103 @@ def test_stage_b_runs_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert record["stages"]["A"]["status"] == "pass"
     assert record["stages"]["B"]["status"] == "pass"
     assert record["stages"]["B"]["result"]["tool_invoked"] is True
+
+
+def test_invalid_stage_b_terminal_type_fails_fast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _setup_sdk_repo(tmp_path, monkeypatch)
+    monkeypatch.setenv("TEST_API_KEY", "not-a-real-key")
+
+    runner = CliRunner()
+    add_profile = runner.invoke(
+        app,
+        [
+            "profile",
+            "add",
+            "demo",
+            "--model",
+            "gpt-5-mini",
+            "--api-key-env",
+            "TEST_API_KEY",
+        ],
+    )
+    assert add_profile.exit_code == ExitCode.OK
+
+    def _should_not_run_stage_a(**kwargs: Any) -> StageAOutcome:
+        raise AssertionError("Stage A should not run when Stage B options are invalid")
+
+    monkeypatch.setattr("oh_llm.cli.run_stage_a", _should_not_run_stage_a)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--profile",
+            "demo",
+            "--stage-b",
+            "--stage-b-terminal-type",
+            "nope",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ],
+    )
+    assert result.exit_code == ExitCode.RUN_FAILED
+    payload = json.loads(result.stdout)
+    run_dir = Path(payload["run_dir"])
+    record = read_run_json(run_dir / "run.json")
+    assert record["stages"]["A"]["status"] == "not_run"
+    assert record["stages"]["B"]["status"] == "fail"
+    assert record["stages"]["B"]["error"]["classification"] == "credential_or_config"
+
+
+def test_invalid_stage_b_max_iterations_fails_fast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _setup_sdk_repo(tmp_path, monkeypatch)
+    monkeypatch.setenv("TEST_API_KEY", "not-a-real-key")
+
+    runner = CliRunner()
+    add_profile = runner.invoke(
+        app,
+        [
+            "profile",
+            "add",
+            "demo",
+            "--model",
+            "gpt-5-mini",
+            "--api-key-env",
+            "TEST_API_KEY",
+        ],
+    )
+    assert add_profile.exit_code == ExitCode.OK
+
+    def _should_not_run_stage_a(**kwargs: Any) -> StageAOutcome:
+        raise AssertionError("Stage A should not run when Stage B options are invalid")
+
+    monkeypatch.setattr("oh_llm.cli.run_stage_a", _should_not_run_stage_a)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--profile",
+            "demo",
+            "--stage-b",
+            "--stage-b-max-iterations",
+            "0",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ],
+    )
+    assert result.exit_code == ExitCode.RUN_FAILED
+    payload = json.loads(result.stdout)
+    run_dir = Path(payload["run_dir"])
+    record = read_run_json(run_dir / "run.json")
+    assert record["stages"]["A"]["status"] == "not_run"
+    assert record["stages"]["B"]["status"] == "fail"
+    assert record["stages"]["B"]["error"]["classification"] == "credential_or_config"
