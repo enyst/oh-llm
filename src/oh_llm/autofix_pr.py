@@ -4,7 +4,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from oh_llm.agent_sdk import AgentSdkError
 from oh_llm.redaction import Redactor
@@ -84,27 +84,30 @@ class ChangeSelection:
         }
 
 
-_STATUS_RENAME = re.compile(r"^..\\s+(?P<old>.+?)\\s+->\\s+(?P<new>.+)$")
+_STATUS_RENAME = re.compile(r"^..\s+(?P<old>.+?)\s+->\s+(?P<new>.+)$")
 
 
-def _parse_porcelain_line(line: str) -> str | None:
+def _unquote_porcelain_path(value: str) -> str:
+    # Porcelain v1 quotes weird filenames; good enough for our v1 use.
+    return value.strip().strip('"')
+
+
+def _parse_porcelain_line_paths(line: str) -> list[str]:
     if not line:
-        return None
+        return []
 
     # `XY <path>` (possibly with rename `old -> new`)
     if len(line) < 4:
-        return None
-
-    path = line[3:].strip()
-    if not path:
-        return None
+        return []
 
     match = _STATUS_RENAME.match(line)
     if match:
-        return match.group("new").strip()
+        old = _unquote_porcelain_path(match.group("old"))
+        new = _unquote_porcelain_path(match.group("new"))
+        return [p for p in [old, new] if p]
 
-    # Porcelain v1 quotes weird filenames; good enough for our v1 use.
-    return path.strip('"')
+    path = _unquote_porcelain_path(line[3:])
+    return [path] if path else []
 
 
 def select_paths_to_commit(repo: Path) -> ChangeSelection:
@@ -113,9 +116,7 @@ def select_paths_to_commit(repo: Path) -> ChangeSelection:
 
     candidates: list[str] = []
     for line in raw_lines:
-        path = _parse_porcelain_line(line)
-        if path:
-            candidates.append(path)
+        candidates.extend(_parse_porcelain_line_paths(line))
 
     unique = sorted(set(p.lstrip("./") for p in candidates if p))
     paths: list[str] = []
@@ -128,12 +129,11 @@ def select_paths_to_commit(repo: Path) -> ChangeSelection:
 
     return ChangeSelection(paths=tuple(paths), skipped_ephemeral=tuple(skipped))
 
-
-def stage_paths(repo: Path, paths: Iterable[str]) -> None:
-    paths_list = [p for p in paths if p]
-    if not paths_list:
-        return
-    _run_git(repo, ["add", "-A", "--", *paths_list])
+def stage_selection(repo: Path, selection: ChangeSelection) -> None:
+    _run_git(repo, ["add", "-A"])
+    if selection.skipped_ephemeral:
+        # Best-effort: if a path disappears between status and staging, ignore it.
+        _run_git(repo, ["reset", "--", *selection.skipped_ephemeral], check=False)
 
 
 def ensure_commit(
@@ -142,7 +142,7 @@ def ensure_commit(
     message: str,
     selection: ChangeSelection,
 ) -> str:
-    stage_paths(repo, selection.paths)
+    stage_selection(repo, selection)
 
     extras: list[str] = []
     name = _run_git(repo, ["config", "--get", "user.name"], check=False).stdout.strip()

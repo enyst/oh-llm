@@ -213,6 +213,73 @@ def test_autofix_pr_commits_pushes_and_creates_pr(
     assert "pr create" in gh_calls
 
 
+def test_autofix_pr_handles_renames_in_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _setup_sdk_repo(tmp_path, monkeypatch)
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    run_dir = _write_run(
+        runs_dir,
+        dirname="20250102_000000_demo_rename",
+        run_id="run_rename123",
+        profile_name="demo",
+        secret_env="TEST_SECRET_ENV",
+    )
+    _write_validation_ok(run_dir / "artifacts")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "autofix",
+            "worktree",
+            "--run",
+            run_dir.name,
+            "--runs-dir",
+            str(runs_dir),
+            "--keep-worktree",
+            "--json",
+        ],
+    )
+    assert result.exit_code == ExitCode.OK
+    payload = json.loads(result.stdout)
+    worktree_path = Path(payload["worktree"]["worktree"]["path"])
+
+    _git(worktree_path, "mv", "README.md", "README2.md")
+
+    fork_repo = tmp_path / "fork.git"
+    fork_repo.mkdir()
+    _git(fork_repo, "init", "--bare")
+
+    gh_log = tmp_path / "gh.log"
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    _write_fake_gh(fake_bin, log_path=gh_log)
+    monkeypatch.setenv("GH_LOG", str(gh_log))
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH','')}")
+
+    pr_result = runner.invoke(
+        app,
+        [
+            "autofix",
+            "pr",
+            "--run",
+            run_dir.name,
+            "--runs-dir",
+            str(runs_dir),
+            "--fork-url",
+            str(fork_repo),
+            "--fork-owner",
+            "testuser",
+            "--json",
+        ],
+    )
+    assert pr_result.exit_code == ExitCode.OK
+
+
 def test_autofix_pr_refuses_when_validation_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
