@@ -9,23 +9,25 @@ from typing import Any, Iterable
 from oh_llm.agent_sdk import AgentSdkError
 from oh_llm.redaction import Redactor
 
-_EPHEMERAL_PREFIXES = (
-    ".venv/",
-    "venv/",
-    ".pytest_cache/",
-    ".mypy_cache/",
-    ".ruff_cache/",
-    ".cache/",
-    "__pycache__/",
-    ".DS_Store",
-)
+_EPHEMERAL_PARTS = {
+    ".venv",
+    "venv",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".cache",
+    "__pycache__",
+}
 
 
 def _is_ephemeral(path: str) -> bool:
     norm = path.replace("\\", "/").lstrip("./")
     if norm.endswith(".pyc"):
         return True
-    return any(norm == prefix or norm.startswith(prefix) for prefix in _EPHEMERAL_PREFIXES)
+    parts = [p for p in norm.split("/") if p]
+    if parts and parts[-1] == ".DS_Store":
+        return True
+    return any(part in _EPHEMERAL_PARTS for part in parts)
 
 
 def _run(
