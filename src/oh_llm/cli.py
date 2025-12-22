@@ -335,8 +335,8 @@ def run(
             status = "PASS" if outcome.ok else "FAIL"
             typer.echo(f"Stage A: {status} (artifacts: {run_paths.run_dir})")
             if not outcome.ok:
-                failure = failure_from_stages(stages)
-                if failure:
+                failure = record.get("failure")
+                if isinstance(failure, dict):
                     typer.echo(f"Failure classification: {failure.get('classification','unknown')}")
         raise typer.Exit(code=ExitCode.OK if outcome.ok else ExitCode.RUN_FAILED)
 
@@ -393,8 +393,8 @@ def run(
         typer.echo(f"Stage A: PASS (artifacts: {run_paths.run_dir})")
         typer.echo(f"Stage B: {'PASS' if ok else 'FAIL'} (artifacts: {run_paths.run_dir})")
         if not ok:
-            failure = failure_from_stages(stages)
-            if failure:
+            failure = record.get("failure")
+            if isinstance(failure, dict):
                 typer.echo(f"Failure classification: {failure.get('classification','unknown')}")
 
     raise typer.Exit(code=ExitCode.OK if ok else ExitCode.RUN_FAILED)
@@ -684,9 +684,10 @@ def autofix_start(
         if not isinstance(failure, dict):
             stages = record.get("stages") if isinstance(record.get("stages"), dict) else {}
             failure = failure_from_stages(stages)
+
         classification = (
-            failure.get("classification") if isinstance(failure, dict) else None
-        ) or "unknown"
+            failure.get("classification") if isinstance(failure, dict) else "unknown"
+        )
 
         if classification == "credential_or_config" and not force:
             _emit(
