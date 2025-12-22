@@ -314,6 +314,8 @@ def run(
         stages["B"]["result"] = {
             "tool_invoked": outcome_b.tool_invoked,
             "tool_observed": outcome_b.tool_observed,
+            "tool_command_preview": outcome_b.tool_command_preview,
+            "tool_output_preview": outcome_b.tool_output_preview,
             "final_answer_preview": outcome_b.final_answer_preview,
         }
         append_log(path=run_paths.log_file, message="Stage B: PASS", redactor=redactor)

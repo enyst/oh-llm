@@ -61,6 +61,7 @@ def _success_payload(
     started: float,
     tool_invoked: bool,
     tool_observed: bool,
+    tool_command_preview: str | None,
     final_answer_preview: str | None,
     tool_output_preview: str | None,
 ) -> dict[str, Any]:
@@ -70,6 +71,7 @@ def _success_payload(
         "duration_ms": duration_ms,
         "tool_invoked": tool_invoked,
         "tool_observed": tool_observed,
+        "tool_command_preview": tool_command_preview,
         "final_answer_preview": final_answer_preview,
         "tool_output_preview": tool_output_preview,
     }
@@ -202,11 +204,16 @@ def main() -> None:
         tool_invoked = False
         tool_observed = False
         tool_output_preview: str | None = None
+        tool_command_preview: str | None = None
         final_answer_preview: str | None = None
 
         for event in conversation.state.events:
             if isinstance(event, ActionEvent) and event.tool_name == tool_name:
                 tool_invoked = True
+                if tool_command_preview is None:
+                    tool_command_preview = _preview(
+                        getattr(getattr(event, "action", None), "command", None)
+                    )
 
             if isinstance(event, ObservationEvent) and event.tool_name == tool_name:
                 tool_observed = True
@@ -236,6 +243,16 @@ def main() -> None:
             print(json.dumps(payload, ensure_ascii=False))
             return
 
+        if not tool_observed:
+            payload = _error_payload(
+                started=started,
+                exc_type="ToolCallError",
+                message="Terminal tool call was invoked, but no observation was recorded.",
+                tb="",
+            )
+            print(json.dumps(payload, ensure_ascii=False))
+            return
+
         if not final_answer_preview or "TOOL_OK" not in final_answer_preview:
             payload = _error_payload(
                 started=started,
@@ -250,6 +267,7 @@ def main() -> None:
             started=started,
             tool_invoked=tool_invoked,
             tool_observed=tool_observed,
+            tool_command_preview=tool_command_preview,
             final_answer_preview=final_answer_preview,
             tool_output_preview=tool_output_preview,
         )

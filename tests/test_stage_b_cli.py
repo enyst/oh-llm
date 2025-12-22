@@ -130,6 +130,8 @@ def test_stage_b_runs_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPat
             duration_ms=34,
             tool_invoked=True,
             tool_observed=True,
+            tool_command_preview="echo TOOL_OK",
+            tool_output_preview="TOOL_OK",
             final_answer_preview="TOOL_OK",
             error=None,
             raw={"ok": True},
@@ -157,4 +159,3 @@ def test_stage_b_runs_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert record["stages"]["A"]["status"] == "pass"
     assert record["stages"]["B"]["status"] == "pass"
     assert record["stages"]["B"]["result"]["tool_invoked"] is True
-

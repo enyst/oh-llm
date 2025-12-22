@@ -16,6 +16,8 @@ class StageBOutcome:
     duration_ms: int
     tool_invoked: bool
     tool_observed: bool
+    tool_command_preview: str | None
+    tool_output_preview: str | None
     final_answer_preview: str | None
     error: dict[str, Any] | None
     raw: dict[str, Any]
@@ -84,6 +86,8 @@ def run_stage_b(
             duration_ms=duration_ms,
             tool_invoked=False,
             tool_observed=False,
+            tool_command_preview=None,
+            tool_output_preview=None,
             final_answer_preview=None,
             error=error,
             raw={"ok": False, "error": error},
@@ -91,6 +95,19 @@ def run_stage_b(
 
     duration_ms = int((time.monotonic() - started) * 1000)
     raw = _safe_load_json(proc.stdout) or {}
+
+    probe_payload: dict[str, Any] = raw or {
+        "ok": False,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+        "returncode": proc.returncode,
+    }
+    probe_result_path = artifacts_dir / "stage_b_probe_result.json"
+    probe_result_path.write_text(redactor.redact_json(probe_payload), encoding="utf-8")
+    try:
+        probe_result_path.chmod(0o600)
+    except OSError:
+        pass
 
     if not raw:
         error = {
@@ -104,6 +121,8 @@ def run_stage_b(
             duration_ms=duration_ms,
             tool_invoked=False,
             tool_observed=False,
+            tool_command_preview=None,
+            tool_output_preview=None,
             final_answer_preview=None,
             error=error,
             raw={
@@ -130,6 +149,16 @@ def run_stage_b(
         duration_ms=int(raw.get("duration_ms") or duration_ms),
         tool_invoked=bool(raw.get("tool_invoked") or False),
         tool_observed=bool(raw.get("tool_observed") or False),
+        tool_command_preview=(
+            str(raw.get("tool_command_preview"))
+            if raw.get("tool_command_preview") is not None
+            else None
+        ),
+        tool_output_preview=(
+            str(raw.get("tool_output_preview"))
+            if raw.get("tool_output_preview") is not None
+            else None
+        ),
         final_answer_preview=(
             str(raw.get("final_answer_preview"))
             if raw.get("final_answer_preview") is not None
@@ -138,4 +167,3 @@ def run_stage_b(
         error=error if isinstance(error, dict) else None,
         raw=raw,
     )
-
