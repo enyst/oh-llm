@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from oh_llm import __version__
 from oh_llm.cli import ExitCode, app
 from oh_llm.redaction import REDACTED, redactor_from_env_vars
 from oh_llm.run_store import (
@@ -148,9 +150,15 @@ def test_cli_run_creates_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     record = read_run_json(run_dir / "run.json")
     assert record["schema_version"] == 1
+    assert record["oh_llm"]["version"] == __version__
+    assert re.fullmatch(r"[0-9a-f]{40}", record["oh_llm"]["git_sha"] or "")
+    assert record["oh_llm"]["git_dirty"] in {True, False}
     assert record["agent_sdk"]["git_sha"] == sha
     assert set(record["stages"].keys()) >= {"A", "B"}
     assert record["stages"]["A"]["status"] == "pass"
+
+    run_json_text = (run_dir / "run.json").read_text(encoding="utf-8")
+    assert "not-a-real-key" not in run_json_text
 
 
 def test_create_run_dir_naming(tmp_path: Path) -> None:

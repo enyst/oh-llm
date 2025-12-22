@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from oh_llm.agent_sdk import AgentSdkInfo
+from oh_llm import __version__
+from oh_llm.agent_sdk import AgentSdkError, AgentSdkInfo, get_git_head_sha, is_git_dirty
 from oh_llm.redaction import Redactor
 
 
@@ -103,6 +104,18 @@ def collect_host_info() -> dict[str, Any]:
     }
 
 
+def collect_oh_llm_info() -> dict[str, Any]:
+    info: dict[str, Any] = {"version": __version__}
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        info["git_sha"] = get_git_head_sha(repo_root)
+        info["git_dirty"] = is_git_dirty(repo_root)
+    except (OSError, AgentSdkError, IndexError):
+        info["git_sha"] = None
+        info["git_dirty"] = None
+    return info
+
+
 def build_run_record(
     *,
     run_id: str,
@@ -115,6 +128,7 @@ def build_run_record(
         "schema_version": 1,
         "run_id": run_id,
         "created_at": created_at,
+        "oh_llm": collect_oh_llm_info(),
         "profile": profile,
         "agent_sdk": {
             "path": str(agent_sdk.path),
