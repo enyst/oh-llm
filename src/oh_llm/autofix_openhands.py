@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import pty
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,6 +147,7 @@ def run_openhands_cli(
     worktree_path: Path,
     artifacts_dir: Path,
     redactor: Redactor,
+    timeout_s: int | None = 3600,
 ) -> tuple[int, Path]:
     """Run OpenHands CLI and stream a redacted transcript to disk."""
     transcript_path = artifacts_dir / "autofix_openhands_transcript.log"
@@ -153,34 +156,86 @@ def run_openhands_cli(
     env = dict(os.environ)
     env.setdefault("NO_COLOR", "1")
 
-    # stdout+stderr combined to keep ordering stable.
+    # OpenHands still expects a TTY even in `--headless` mode (prompt_toolkit input handling).
+    # Run it in a pseudo-TTY so it doesn't crash when stdin is not a terminal.
+    master_fd, slave_fd = pty.openpty()
+    try:
+        os.set_blocking(master_fd, False)
+    except (AttributeError, OSError):
+        pass
+    started = time.monotonic()
+    deadline = None if timeout_s is None else (started + max(1, int(timeout_s)))
+
     proc = subprocess.Popen(
         [openhands_bin, "--headless", "--always-approve", "-t", task],
         cwd=str(worktree_path),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        text=False,
+        close_fds=True,
     )
+    try:
+        os.close(slave_fd)
+    except OSError:
+        pass
+
+    exit_code: int | None = None
 
     with transcript_path.open("w", encoding="utf-8") as handle:
         handle.write(redactor.redact_text(f"[{_utc_now_iso()}] openhands_bin: {openhands_bin}\n"))
         handle.write(redactor.redact_text(f"[{_utc_now_iso()}] cwd: {worktree_path}\n"))
-        try:
-            if proc.stdout is not None:
-                for line in proc.stdout:
-                    handle.write(redactor.redact_text(line))
-        finally:
-            exit_code = proc.wait()
-            handle.write(redactor.redact_text(f"\n[{_utc_now_iso()}] exit_code: {exit_code}\n"))
+        if timeout_s is not None:
+            handle.write(redactor.redact_text(f"[{_utc_now_iso()}] timeout_s: {timeout_s}\n"))
+
+        while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                proc.terminate()
+                handle.write(
+                    redactor.redact_text(
+                        f"\n[{_utc_now_iso()}] timeout reached; sent SIGTERM\n"
+                    )
+                )
+                break
+
+            try:
+                data = os.read(master_fd, 4096)
+            except BlockingIOError:
+                data = b""
+            except OSError:
+                data = b""
+
+            if data:
+                handle.write(redactor.redact_text(data.decode("utf-8", errors="replace")))
+                continue
+
+            exit_code = proc.poll()
+            if exit_code is not None:
+                break
+
+            time.sleep(0.05)
+
+        if exit_code is None:
+            try:
+                exit_code = proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                exit_code = proc.wait(timeout=5)
+
+        handle.write(redactor.redact_text(f"\n[{_utc_now_iso()}] exit_code: {exit_code}\n"))
 
     try:
         transcript_path.chmod(0o600)
     except OSError:
         pass
 
-    return exit_code, transcript_path
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
+
+    return int(exit_code), transcript_path
 
 
 def write_worktree_diff(
