@@ -81,4 +81,5 @@ def test_run_stage_a_fails_fast_when_api_key_env_missing(
     record = read_run_json(run_dir / "run.json")
     assert record["stages"]["A"]["status"] == "fail"
     assert record["stages"]["A"]["error"]["classification"] == "credential_or_config"
-
+    assert record["failure"]["classification"] == "credential_or_config"
+    assert payload["failure"]["classification"] == "credential_or_config"
