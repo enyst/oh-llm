@@ -16,6 +16,7 @@ from oh_llm.agent_sdk import (
     resolve_agent_sdk_path,
     uv_run_python,
 )
+from oh_llm.failures import failure_from_stages, update_run_failure
 from oh_llm.profiles import get_profile, list_profiles, upsert_profile
 from oh_llm.redaction import redactor_from_env_vars
 from oh_llm.run_store import (
@@ -166,6 +167,7 @@ def run(
         agent_sdk=sdk_info,
         stages=stages,
     )
+    record["requested"] = {"stage_b": bool(stage_b)}
     write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
     append_log(
         path=run_paths.log_file,
@@ -185,6 +187,7 @@ def run(
                 "and re-run with `--profile <id>`."
             ),
         }
+        update_run_failure(record)
         write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
         append_log(
             path=run_paths.log_file,
@@ -193,7 +196,12 @@ def run(
         )
         _emit(
             cli_ctx,
-            payload={"ok": False, "run_dir": str(run_paths.run_dir), "stages": stages},
+            payload={
+                "ok": False,
+                "run_dir": str(run_paths.run_dir),
+                "stages": stages,
+                "failure": record.get("failure"),
+            },
             text="Missing --profile (see run.json for details).",
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
@@ -207,6 +215,7 @@ def run(
             "message": f"Profile not found: {profile}",
             "hint": "Create it via `oh-llm profile add ...` or check `oh-llm profile list`.",
         }
+        update_run_failure(record)
         write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
         append_log(
             path=run_paths.log_file,
@@ -215,7 +224,12 @@ def run(
         )
         _emit(
             cli_ctx,
-            payload={"ok": False, "run_dir": str(run_paths.run_dir), "stages": stages},
+            payload={
+                "ok": False,
+                "run_dir": str(run_paths.run_dir),
+                "stages": stages,
+                "failure": record.get("failure"),
+            },
             text=f"Profile not found: {profile}",
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
@@ -229,6 +243,7 @@ def run(
             "message": "Profile is missing required fields (model and/or api_key_env).",
             "hint": "Recreate the profile via `oh-llm profile add ... --overwrite`.",
         }
+        update_run_failure(record)
         write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
         append_log(
             path=run_paths.log_file,
@@ -237,7 +252,12 @@ def run(
         )
         _emit(
             cli_ctx,
-            payload={"ok": False, "run_dir": str(run_paths.run_dir), "stages": stages},
+            payload={
+                "ok": False,
+                "run_dir": str(run_paths.run_dir),
+                "stages": stages,
+                "failure": record.get("failure"),
+            },
             text="Profile is incomplete (missing model/api_key_env).",
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
@@ -251,6 +271,7 @@ def run(
             "message": f"API key env var not set: {profile_record.api_key_env}",
             "hint": f"Export `{profile_record.api_key_env}` and re-run.",
         }
+        update_run_failure(record)
         write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
         append_log(
             path=run_paths.log_file,
@@ -259,7 +280,12 @@ def run(
         )
         _emit(
             cli_ctx,
-            payload={"ok": False, "run_dir": str(run_paths.run_dir), "stages": stages},
+            payload={
+                "ok": False,
+                "run_dir": str(run_paths.run_dir),
+                "stages": stages,
+                "failure": record.get("failure"),
+            },
             text="API key env var not set (see run.json for details).",
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
@@ -293,15 +319,25 @@ def run(
             redactor=redactor,
         )
 
+    update_run_failure(record)
     write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
 
     if not outcome.ok or not stage_b:
-        payload = {"ok": outcome.ok, "run_dir": str(run_paths.run_dir), "stages": stages}
+        payload = {
+            "ok": outcome.ok,
+            "run_dir": str(run_paths.run_dir),
+            "stages": stages,
+            "failure": record.get("failure"),
+        }
         if cli_ctx.json_output:
             _emit(cli_ctx, payload=payload, text="")
         else:
             status = "PASS" if outcome.ok else "FAIL"
             typer.echo(f"Stage A: {status} (artifacts: {run_paths.run_dir})")
+            if not outcome.ok:
+                failure = record.get("failure")
+                if isinstance(failure, dict):
+                    typer.echo(f"Failure classification: {failure.get('classification','unknown')}")
         raise typer.Exit(code=ExitCode.OK if outcome.ok else ExitCode.RUN_FAILED)
 
     # Stage B: end-to-end agent run (tool calling)
@@ -341,15 +377,25 @@ def run(
             redactor=redactor,
         )
 
+    update_run_failure(record)
     write_run_json(path=run_paths.run_json, run_record=record, redactor=redactor)
 
     ok = stages["A"]["status"] == "pass" and stages["B"]["status"] == "pass"
-    payload = {"ok": ok, "run_dir": str(run_paths.run_dir), "stages": stages}
+    payload = {
+        "ok": ok,
+        "run_dir": str(run_paths.run_dir),
+        "stages": stages,
+        "failure": record.get("failure"),
+    }
     if cli_ctx.json_output:
         _emit(cli_ctx, payload=payload, text="")
     else:
         typer.echo(f"Stage A: PASS (artifacts: {run_paths.run_dir})")
         typer.echo(f"Stage B: {'PASS' if ok else 'FAIL'} (artifacts: {run_paths.run_dir})")
+        if not ok:
+            failure = record.get("failure")
+            if isinstance(failure, dict):
+                typer.echo(f"Failure classification: {failure.get('classification','unknown')}")
 
     raise typer.Exit(code=ExitCode.OK if ok else ExitCode.RUN_FAILED)
 
@@ -594,9 +640,84 @@ def autofix_start(
         "--json",
         help="Emit machine-readable JSON output for this command.",
     ),
+    run: str | None = typer.Option(
+        None,
+        "--run",
+        help="Run id or run directory name/prefix to auto-fix.",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Override safety gating for credential/config failures.",
+    ),
 ) -> None:
     """Start an auto-fix agent run (stub)."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+
+    if run:
+        resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+        try:
+            run_dir = resolve_run_dir(resolved_runs_dir, run)
+        except (RunNotFoundError, RunAmbiguousError) as exc:
+            _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+            raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+        record = read_run_record(run_dir)
+        if record is None:
+            _emit(
+                cli_ctx,
+                payload={
+                    "ok": False,
+                    "error": "run.json missing or corrupt",
+                    "run_dir": str(run_dir),
+                },
+                text=f"run.json missing or corrupt in: {run_dir}",
+            )
+            raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+        failure = record.get("failure")
+        if not isinstance(failure, dict):
+            stages = record.get("stages") if isinstance(record.get("stages"), dict) else {}
+            failure = failure_from_stages(stages)
+
+        classification = (
+            failure.get("classification") if isinstance(failure, dict) else "unknown"
+        )
+
+        if classification == "credential_or_config" and not force:
+            _emit(
+                cli_ctx,
+                payload={
+                    "ok": False,
+                    "error": "refused",
+                    "reason": "credential_or_config",
+                    "run_dir": str(run_dir),
+                    "failure": failure,
+                },
+                text=(
+                    "Refusing to auto-fix a credential/config failure by default. "
+                    "Fix credentials/config and re-run, or pass --force."
+                ),
+            )
+            raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "not_implemented",
+                "run_dir": str(run_dir),
+                "failure": failure,
+            },
+            text="Auto-fix not implemented yet.",
+        )
+        raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
+
     _emit(
         cli_ctx,
         payload={"ok": False, "error": "not_implemented"},

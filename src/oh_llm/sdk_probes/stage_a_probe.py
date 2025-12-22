@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 import traceback
 from pathlib import Path
@@ -13,47 +14,14 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _classify_error(*, exc_type: str, message: str) -> tuple[str, str]:
-    text = f"{exc_type}: {message}".lower()
+def _ensure_oh_llm_importable() -> None:
+    # Probes are executed as standalone scripts; make `src/` importable for shared helpers.
+    src_dir = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(src_dir))
 
-    credential_markers = [
-        "unauthorized",
-        "invalid api key",
-        "api key invalid",
-        "incorrect api key",
-        "missing api key",
-        "no api key",
-        "authentication",
-        "forbidden",
-        "401",
-        "403",
-    ]
-    if any(marker in text for marker in credential_markers):
-        return (
-            "credential_or_config",
-            "Check your API key env var and provider credentials.",
-        )
 
-    model_markers = ["model_not_found", "no such model", "does not exist", "404"]
-    if any(marker in text for marker in model_markers):
-        return ("credential_or_config", "Check that the model name is correct.")
-
-    network_markers = [
-        "api connection error",
-        "connection refused",
-        "name or service not known",
-        "nodename nor servname provided",
-        "timed out",
-        "timeout",
-        "ssl",
-    ]
-    if any(marker in text for marker in network_markers):
-        return ("credential_or_config", "Check base_url/network connectivity and timeout.")
-
-    return (
-        "sdk_or_provider_bug",
-        "Likely SDK/provider incompatibility; consider running auto-fix after reproducing.",
-    )
+_ensure_oh_llm_importable()
+from oh_llm.failures import classify_text  # noqa: E402
 
 
 def _success_payload(
@@ -73,7 +41,7 @@ def _success_payload(
 
 def _error_payload(*, started: float, exc_type: str, message: str, tb: str) -> dict[str, Any]:
     duration_ms = int((time.monotonic() - started) * 1000)
-    classification, hint = _classify_error(exc_type=exc_type, message=message)
+    classification, hint = classify_text(exc_type=exc_type, message=message)
     return {
         "ok": False,
         "duration_ms": duration_ms,
