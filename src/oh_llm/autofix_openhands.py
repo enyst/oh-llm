@@ -30,6 +30,15 @@ class OpenHandsArtifacts:
     run_record_json: Path
 
 
+@dataclass(frozen=True)
+class OpenHandsCliResult:
+    args: list[str]
+    exit_code: int
+    timed_out: bool
+    duration_ms: int
+    transcript_path: Path
+
+
 def resolve_openhands_bin(value: str) -> str:
     """Resolve an OpenHands CLI binary name/path to an executable path."""
     value = (value or "").strip()
@@ -147,7 +156,7 @@ def run_openhands_cli(
     artifacts_dir: Path,
     redactor: Redactor,
     timeout_s: int | None = 3600,
-) -> tuple[int, Path]:
+) -> OpenHandsCliResult:
     """Run OpenHands CLI and stream a redacted transcript to disk."""
     transcript_path = artifacts_dir / "autofix_openhands_transcript.log"
     transcript_path.parent.mkdir(parents=True, exist_ok=True)
@@ -165,8 +174,9 @@ def run_openhands_cli(
 
         # In practice, `openhands --headless` in the default CLI mode still touches prompt_toolkit
         # and expects a real terminal. The experimental UI supports true headless execution.
+        args = ["--exp", "--headless", "--always-approve", "-t", task]
         proc = subprocess.Popen(
-            [openhands_bin, "--exp", "--headless", "--always-approve", "-t", task],
+            [openhands_bin, *args],
             cwd=str(worktree_path),
             env=env,
             stdout=subprocess.PIPE,
@@ -207,7 +217,13 @@ def run_openhands_cli(
     except OSError:
         pass
 
-    return int(exit_code), transcript_path
+    return OpenHandsCliResult(
+        args=args,
+        exit_code=int(exit_code),
+        timed_out=timed_out,
+        duration_ms=duration_ms,
+        transcript_path=transcript_path,
+    )
 
 
 def write_worktree_diff(
@@ -231,11 +247,15 @@ def write_openhands_run_record(
     *,
     output_path: Path,
     openhands_bin: str,
+    openhands_args: list[str],
     worktree_path: Path,
     context_path: Path,
     transcript_path: Path,
     diff_patch_path: Path,
     exit_code: int,
+    timed_out: bool,
+    duration_ms: int,
+    timeout_s: int | None,
     started_at: str,
     finished_at: str,
     redactor: Redactor,
@@ -246,9 +266,12 @@ def write_openhands_run_record(
         "finished_at": finished_at,
         "openhands": {
             "bin": openhands_bin,
-            "args": ["--headless", "--always-approve", "-t", "<task>"],
+            "args": list(openhands_args),
             "cwd": str(worktree_path),
             "exit_code": exit_code,
+            "timed_out": timed_out,
+            "duration_ms": duration_ms,
+            "timeout_s": timeout_s,
         },
         "artifacts": {
             "context_md": str(context_path),
@@ -289,13 +312,15 @@ def run_openhands_agent(
 
     task = build_openhands_task(context_path=context_path)
 
+    timeout_s = 3600
     started_at = _utc_now_iso()
-    exit_code, transcript_path = run_openhands_cli(
+    result = run_openhands_cli(
         openhands_bin=openhands_bin,
         task=task,
         worktree_path=worktree_path,
         artifacts_dir=artifacts_dir,
         redactor=redactor,
+        timeout_s=timeout_s,
     )
     finished_at = _utc_now_iso()
 
@@ -306,11 +331,15 @@ def run_openhands_agent(
     write_openhands_run_record(
         output_path=run_record_path,
         openhands_bin=openhands_bin,
+        openhands_args=result.args,
         worktree_path=worktree_path,
         context_path=context_path,
-        transcript_path=transcript_path,
+        transcript_path=result.transcript_path,
         diff_patch_path=diff_patch_path,
-        exit_code=exit_code,
+        exit_code=result.exit_code,
+        timed_out=result.timed_out,
+        duration_ms=result.duration_ms,
+        timeout_s=timeout_s,
         started_at=started_at,
         finished_at=finished_at,
         redactor=redactor,
@@ -318,7 +347,7 @@ def run_openhands_agent(
 
     return OpenHandsArtifacts(
         context_md=context_path,
-        transcript_log=transcript_path,
+        transcript_log=result.transcript_path,
         diff_patch=diff_patch_path,
         run_record_json=run_record_path,
     )
