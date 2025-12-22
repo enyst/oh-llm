@@ -2,7 +2,7 @@
 
 ## Summary
 
-`oh-llm` is a local-first tool (CLI + TUI) for validating whether a newly released LLM works with the OpenHands Software Agent SDK (`~/repos/agent-sdk`). When a model fails compatibility tests, `oh-llm` launches an OpenHands agent to reproduce, diagnose, patch the SDK, and open an upstream PR against `OpenHands/software-agent-sdk`.
+`oh-llm` is a local-first tool (CLI first; TUI planned) for validating whether a newly released LLM works with the OpenHands Software Agent SDK (`~/repos/agent-sdk`). When a model fails compatibility tests, `oh-llm` launches an OpenHands agent to reproduce, diagnose, patch the SDK, and open an upstream PR against `OpenHands/software-agent-sdk`.
 
 This repo is the “LLM onboarding & compatibility gate” for OpenHands.
 
@@ -41,38 +41,27 @@ New or newly supported LLMs often break in subtle ways when used through the SDK
 
 ### Entry points
 
-1) **TUI** (primary):
-- Create/edit LLM “profiles”
-- Run tests on a profile
-- View results + logs
-- Trigger “auto-fix” (OpenHands agent) when failing
-- Track past runs
+1) **CLI** (v1, required):
+- Scriptable commands to create/update profiles, run the suite, and export artifacts.
 
-2) **CLI** (also required):
-- Scriptable commands to list profiles, run the suite, and export artifacts
-- The TUI can be a subcommand (e.g. `oh-llm tui`)
+2) **TUI** (planned, vNext):
+- Local UI to create/edit profiles, run tests, and browse artifacts.
+- Likely a subcommand (e.g. `oh-llm tui`).
 
 ### Core flow: add model → test → (maybe) auto-fix
 
-1) User selects “Add LLM”
-2) User enters:
-   - `model` (any model string supported by litellm; e.g. `anthropic/...`, `openai/...`, `openrouter/...`)
-   - `base_url` (optional; “OpenAI-compatible” style endpoint from our perspective)
-   - credentials reference:
-     - the **name of the environment variable** that holds the API key (e.g. `OPENAI_API_KEY`)
-     - (optionally later) additional provider-specific env vars / fields supported by the SDK’s `LLM` schema
-   - optional: “supports tools?”, “supports streaming?”, “responses API?” (mostly auto-detected; user override for troubleshooting)
-3) User clicks “Run compatibility suite”
-4) `oh-llm` runs a staged test suite (see below) using the SDK
-5) UI shows a clear status per stage:
-   - ✅ Pass
-   - ❌ Fail (with error + captured context)
-6) If fail: UI offers “Run auto-fix agent”
-7) Auto-fix agent produces:
-   - a reproducible minimal failing script (artifact)
-   - a patch against `~/repos/agent-sdk`
-   - an upstream PR URL (or a local branch if PR creation fails)
-8) UI displays the PR link and a human-readable summary of what changed.
+1) Create a profile (non-secret config stored; secrets referenced by env var name only):
+   - `oh-llm profile add <id> --model <litellm-model> [--base-url <url>] --api-key-env <ENV_VAR_NAME>`
+2) Export the API key for the chosen env var in your shell.
+3) Run the compatibility suite:
+   - v1 smoke: `oh-llm run --profile <id>` (Stage A)
+   - full compatibility: `oh-llm run --profile <id> --stage-b` (Stage A + Stage B)
+4) Inspect results:
+   - terminal output + `run.json`, logs, and artifacts under the run directory
+5) If failing and it looks like an SDK incompatibility:
+   - launch an auto-fix agent run (v1 planned) that reproduces, patches `~/repos/agent-sdk`, and opens an upstream PR
+
+In vNext, the TUI provides the same flow via forms/buttons, plus run browsing.
 
 ### Output expectations
 
@@ -99,9 +88,9 @@ Purpose: verify credentials and base URL wiring.
   - content is parseable into expected SDK message structures,
   - errors are mapped sensibly (no cryptic provider exceptions).
 
-### Stage B — End-to-end agent run (tool calling)
+### Stage B — End-to-end agent run (tool calling) (recommended)
 
-Purpose: end-to-end SDK run with tool calling (required).
+Purpose: end-to-end SDK run with tool calling (full compatibility check).
 
 - Create `Agent(llm=..., tools=[TerminalTool])`.
 - Run a short prompt that forces a deterministic tool call, e.g.:
@@ -112,7 +101,7 @@ Purpose: end-to-end SDK run with tool calling (required).
   - tool output is observed by the agent,
   - agent reports a final “TOOL_OK” in natural language.
 
-Note: tool calling is **required** for “works with the agent-sdk”. The SDK includes a non-native tool calling compatibility layer (prompt-based conversion), so models that don’t support tool calling natively can still pass Stage B as long as the SDK can reliably translate tool intents into tool invocations.
+Note: tool calling is required for “fully works with the agent-sdk”. The SDK includes a non-native tool calling compatibility layer (prompt-based conversion), so models that don’t support tool calling natively can still pass Stage B as long as the SDK can reliably translate tool intents into tool invocations.
 
 ### Stage C — Optional advanced gates (toggleable)
 
@@ -171,10 +160,13 @@ If PR creation fails:
 
 ### Components
 
-- **TUI app**: local UI for profiles and runs.
+**v1**
 - **CLI**: entry point for running suites and automation.
 - **Runner**: executes compatibility suite stages; collects artifacts.
 - **Agent launcher**: runs OpenHands agent for auto-fix in an SDK worktree.
+
+**vNext**
+- **TUI app**: local UI for profiles and runs.
 
 ### Data model (high-level)
 
@@ -225,25 +217,34 @@ We are explicitly **not** solving multi-user auth/hosting in v1. Future deployme
 
 ## Milestones (suggested)
 
-1) Local runner (CLI + TUI): define profile format, run Stage A–B, save artifacts.
-2) Auto-fix agent workflow: worktree + OpenHands run + local patch output.
-3) Upstream PR automation: gh integration, fork/branch management.
-4) Polish: run history, artifact viewer, better failure classification UX.
-5) (Optional later) Web server: auth + basic HTML form + run endpoint.
+1) Local runner (CLI): define profile format, run Stage A, save artifacts.
+2) Extend suite: implement Stage B + optional advanced gates.
+3) Auto-fix agent workflow: worktree + OpenHands run + local patch output.
+4) Upstream PR automation: gh integration, fork/branch management.
+5) TUI: profile/run management + artifact viewer.
+6) Polish: better failure classification UX.
+7) (Optional later) Web server: auth + basic HTML form + run endpoint.
 
 ## Decisions (current)
 
 - **Profiles**: reuse SDK `LLMRegistry` profiles on disk for the non-secret config; inject secrets at runtime.
 - **Provider scope**: anything supported by litellm; from `oh-llm`’s POV this is “OpenAI-compatible style config” (model + optional base_url + credentials / provider fields).
-- **Definition of “works”**: Stage A–B are mandatory; tool calling is required (native or via the SDK’s non-native tool calling compatibility layer).
+- **Definition of “works”**:
+  - **v1 “smoke”**: Stage A must pass (credentials/base_url/SDK wiring).
+  - **full compatibility**: Stage A + Stage B should pass; tool calling is required (native or via the SDK’s non-native tool calling compatibility layer).
 - **Auto-fix boundaries**: the agent may change whatever is needed for good support (SDK code, tests, docs/examples).
 - **Upstream PR target**: upstream is `OpenHands/software-agent-sdk`, PRs target `main`.
 - **Failure classification**: detect “credential/config error” vs “likely SDK bug”; only offer auto-fix by default for the latter (still allow a force option).
 - **Implementation (v1)**: Python (matches SDK; easiest to run the suite and integrate agent workflows).
-- **Execution (v1)**: local-only (CLI + TUI). No multi-user hosting in v1.
+- **Execution (v1)**: local-only, CLI first. No multi-user hosting in v1.
 - **SDK under test (v1)**: use `~/repos/agent-sdk` (configurable later if needed).
 - **Auth fields (v1)**: only `model`, optional `base_url`, and a single `api_key` read from a user-provided environment variable name.
 
 ## Open questions
 
-None (v1).
+- **Suite scope**: do we ship Stage A only first (smoke), or block “works” on Stage B from day one?
+- **Stage prompts**: which minimal prompts are stable across models (and cheap), especially for Stage B deterministic tool runs?
+- **Failure classification**: which heuristics are enough to confidently label “bad creds / bad base_url / quota” vs “SDK bug” before offering auto-fix?
+- **TUI tech**: what library (e.g. `textual`, `urwid`, `prompt_toolkit`, custom curses) best fits a fast local UI with run browsing?
+- **Auto-fix prompts**: what is the minimal “prompt pack” to consistently reproduce + patch SDK issues (and avoid overfitting)?
+- **GitHub Actions runner**: do we support this soon, and if so, which constraints apply (self-hosted runners for custom base URLs, secrets handling, cost controls)?

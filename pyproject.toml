@@ -2,7 +2,7 @@
 name = "oh-llm"
 version = "0.0.0"
 description = "Local CLI/TUI to validate new LLMs with OpenHands agent-sdk"
-readme = "PRD.md"
+readme = "prd.md"
 requires-python = ">=3.12"
 dependencies = [
     "typer>=0.20.1",
