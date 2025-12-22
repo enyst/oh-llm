@@ -26,6 +26,14 @@ from oh_llm.run_store import (
     resolve_runs_dir,
     write_run_json,
 )
+from oh_llm.runs import (
+    RunAmbiguousError,
+    RunNotFoundError,
+    list_run_dirs,
+    read_run_record,
+    resolve_run_dir,
+    summarize_run,
+)
 from oh_llm.stage_a import run_stage_a
 from oh_llm.stage_b import run_stage_b
 
@@ -487,10 +495,95 @@ def runs_list(
         "--json",
         help="Emit machine-readable JSON output for this command.",
     ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        help="Maximum runs to list.",
+    ),
 ) -> None:
-    """List previous runs (stub)."""
+    """List previous runs."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
-    _emit(cli_ctx, payload={"runs": []}, text="No runs yet (stub).")
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+    summaries = [
+        summarize_run(run_dir)
+        for run_dir in list_run_dirs(resolved_runs_dir)[: max(limit, 0)]
+    ]
+
+    if cli_ctx.json_output:
+        _emit(cli_ctx, payload={"runs": [s.as_json() for s in summaries]}, text="")
+        return
+
+    if not summaries:
+        typer.echo("No runs found.")
+        return
+
+    for summary in summaries:
+        profile = summary.profile_name or "(unknown)"
+        created_at = summary.created_at or "(unknown time)"
+        run_id = summary.run_id or "(unknown id)"
+        typer.echo(
+            f"{summary.status}: {run_id}  {created_at}  {profile}  ({summary.run_dir.name})"
+        )
+
+
+@runs_app.command("show")
+def runs_show(
+    ctx: typer.Context,
+    run: str = typer.Argument(..., help="Run id or run directory name/prefix."),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+) -> None:
+    """Show details for one run."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+
+    try:
+        run_dir = resolve_run_dir(resolved_runs_dir, run)
+    except (RunNotFoundError, RunAmbiguousError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    record_path = run_dir / "run.json"
+    if not record_path.exists():
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json missing", "run_dir": str(run_dir)},
+            text=f"run.json missing in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    payload = read_run_record(run_dir)
+    if payload is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json corrupt", "run_dir": str(run_dir)},
+            text=f"run.json corrupt in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+    if cli_ctx.json_output:
+        _emit(cli_ctx, payload={"ok": True, "run_dir": str(run_dir), "run": payload}, text="")
+        return
+
+    summary = summarize_run(run_dir)
+    typer.echo(f"run_dir: {run_dir}")
+    typer.echo(f"run_id: {summary.run_id or '(unknown)'}")
+    typer.echo(f"created_at: {summary.created_at or '(unknown)'}")
+    typer.echo(f"profile: {summary.profile_name or '(unknown)'}")
+    for key in sorted(summary.stage_statuses.keys()):
+        typer.echo(f"stage {key}: {summary.stage_statuses[key]}")
 
 
 @autofix_app.command("start")
