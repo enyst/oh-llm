@@ -18,7 +18,7 @@ from oh_llm.agent_sdk import (
 )
 from oh_llm.failures import failure_from_stages, update_run_failure
 from oh_llm.profiles import get_profile, list_profiles, upsert_profile
-from oh_llm.redaction import redactor_from_env_vars
+from oh_llm.redaction import Redactor, redactor_from_env_vars
 from oh_llm.run_store import (
     append_log,
     build_run_record,
@@ -48,6 +48,7 @@ class ExitCode(IntEnum):
 @dataclass(frozen=True)
 class CliContext:
     json_output: bool
+    redactor: Redactor
 
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -61,12 +62,12 @@ def _ctx(ctx: typer.Context) -> CliContext:
     obj = ctx.obj
     if isinstance(obj, CliContext):
         return obj
-    return CliContext(json_output=False)
+    return CliContext(json_output=False, redactor=Redactor())
 
 
 def _emit(ctx: CliContext, *, payload: dict[str, Any], text: str) -> None:
     if ctx.json_output:
-        typer.echo(json.dumps(payload, sort_keys=True))
+        typer.echo(json.dumps(ctx.redactor.redact_obj(payload), sort_keys=True))
         return
     typer.echo(text)
 
@@ -74,7 +75,7 @@ def _emit(ctx: CliContext, *, payload: dict[str, Any], text: str) -> None:
 def _ctx_with_json_override(ctx: typer.Context, *, json_output: bool) -> CliContext:
     base = _ctx(ctx)
     if json_output:
-        return CliContext(json_output=True)
+        return CliContext(json_output=True, redactor=base.redactor)
     return base
 
 
@@ -97,7 +98,7 @@ def _main(
         typer.echo(__version__)
         raise typer.Exit()
 
-    ctx.obj = CliContext(json_output=json_output)
+    ctx.obj = CliContext(json_output=json_output, redactor=Redactor())
 
 
 @app.command()
@@ -166,6 +167,7 @@ def run(
     if profile_record and profile_record.api_key_env:
         auto_redact.append(profile_record.api_key_env)
     redactor = redactor_from_env_vars(*redact_env, *auto_redact)
+    cli_ctx = CliContext(json_output=cli_ctx.json_output, redactor=redactor)
 
     record = build_run_record(
         run_id=run_paths.run_id,
