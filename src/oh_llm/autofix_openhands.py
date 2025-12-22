@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import pty
 import shutil
 import subprocess
 import time
@@ -156,82 +155,55 @@ def run_openhands_cli(
     env = dict(os.environ)
     env.setdefault("NO_COLOR", "1")
 
-    # OpenHands still expects a TTY even in `--headless` mode (prompt_toolkit input handling).
-    # Run it in a pseudo-TTY so it doesn't crash when stdin is not a terminal.
-    master_fd, slave_fd = pty.openpty()
-    try:
-        os.set_blocking(master_fd, False)
-    except (AttributeError, OSError):
-        pass
     started = time.monotonic()
-    deadline = None if timeout_s is None else (started + max(1, int(timeout_s)))
-
-    proc = subprocess.Popen(
-        [openhands_bin, "--headless", "--always-approve", "-t", task],
-        cwd=str(worktree_path),
-        env=env,
-        stdin=slave_fd,
-        stdout=slave_fd,
-        stderr=slave_fd,
-        text=False,
-        close_fds=True,
-    )
-    try:
-        os.close(slave_fd)
-    except OSError:
-        pass
-
-    exit_code: int | None = None
-
     with transcript_path.open("w", encoding="utf-8") as handle:
         handle.write(redactor.redact_text(f"[{_utc_now_iso()}] openhands_bin: {openhands_bin}\n"))
         handle.write(redactor.redact_text(f"[{_utc_now_iso()}] cwd: {worktree_path}\n"))
         if timeout_s is not None:
             handle.write(redactor.redact_text(f"[{_utc_now_iso()}] timeout_s: {timeout_s}\n"))
+        handle.flush()
 
-        while True:
-            if deadline is not None and time.monotonic() >= deadline:
-                proc.terminate()
-                handle.write(
-                    redactor.redact_text(
-                        f"\n[{_utc_now_iso()}] timeout reached; sent SIGTERM\n"
-                    )
-                )
-                break
+        # In practice, `openhands --headless` in the default CLI mode still touches prompt_toolkit
+        # and expects a real terminal. The experimental UI supports true headless execution.
+        proc = subprocess.Popen(
+            [openhands_bin, "--exp", "--headless", "--always-approve", "-t", task],
+            cwd=str(worktree_path),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
 
+        output = ""
+        timed_out = False
+        try:
+            output, _ = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            proc.terminate()
             try:
-                data = os.read(master_fd, 4096)
-            except BlockingIOError:
-                data = b""
-            except OSError:
-                data = b""
-
-            if data:
-                handle.write(redactor.redact_text(data.decode("utf-8", errors="replace")))
-                continue
-
-            exit_code = proc.poll()
-            if exit_code is not None:
-                break
-
-            time.sleep(0.05)
-
-        if exit_code is None:
-            try:
-                exit_code = proc.wait(timeout=5)
+                output, _ = proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                exit_code = proc.wait(timeout=5)
+                output, _ = proc.communicate(timeout=5)
 
-        handle.write(redactor.redact_text(f"\n[{_utc_now_iso()}] exit_code: {exit_code}\n"))
+        duration_ms = int((time.monotonic() - started) * 1000)
+        if output:
+            handle.write(redactor.redact_text(output))
+        if timed_out:
+            handle.write(
+                redactor.redact_text(f"\n[{_utc_now_iso()}] timeout reached; terminating\n")
+            )
+
+        exit_code = proc.returncode if proc.returncode is not None else 1
+        handle.write(
+            redactor.redact_text(
+                f"\n[{_utc_now_iso()}] exit_code: {exit_code} (duration_ms={duration_ms})\n"
+            )
+        )
 
     try:
         transcript_path.chmod(0o600)
-    except OSError:
-        pass
-
-    try:
-        os.close(master_fd)
     except OSError:
         pass
 
