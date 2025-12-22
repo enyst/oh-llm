@@ -71,10 +71,8 @@ def write_openhands_context(
 
     profile = run_record.get("profile") if isinstance(run_record.get("profile"), dict) else {}
     profile_name = profile.get("name")
-    model = None
     resolved = profile.get("resolved") if isinstance(profile.get("resolved"), dict) else {}
-    if isinstance(resolved, dict):
-        model = resolved.get("model")
+    model = resolved.get("model")
 
     body = (
         "# oh-llm auto-fix: OpenHands agent context\n\n"
@@ -125,13 +123,8 @@ def _run_git(repo: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     )
     if proc.returncode != 0:
         raise AgentSdkError(
-            "Command failed: git -C "
-            + str(repo)
-            + " "
-            + " ".join(args)
-            + "\n"
-            + (proc.stdout or "")
-            + (proc.stderr or "")
+            f"Command failed: git -C {repo} {' '.join(args)}\n"
+            f"{proc.stdout or ''}{proc.stderr or ''}"
         )
     return proc
 
