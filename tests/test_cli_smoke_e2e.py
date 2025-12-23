@@ -38,6 +38,7 @@ def test_cli_smoke_offline_mock_mode_and_missing_key(tmp_path: Path) -> None:
         pytest.skip("uv not available")
 
     repo_root = Path(__file__).resolve().parents[1]
+    profile_name = "demo"
 
     # Minimal directory for uv `--directory` execution (probe returns before importing SDK).
     sdk_path = tmp_path / "agent-sdk"
@@ -55,7 +56,7 @@ def test_cli_smoke_offline_mock_mode_and_missing_key(tmp_path: Path) -> None:
         args=[
             "profile",
             "add",
-            "demo",
+            profile_name,
             "--model",
             "mock-model",
             "--api-key-env",
@@ -68,14 +69,15 @@ def test_cli_smoke_offline_mock_mode_and_missing_key(tmp_path: Path) -> None:
     assert _json_line(add_profile)["ok"] is True
 
     runs_dir = tmp_path / "runs"
+    base_run_args = ["run", "--profile", profile_name, "--runs-dir", str(runs_dir), "--json"]
 
     # Negative test: non-mock run should fail fast as credential/config without network calls.
     run_non_mock = _run_oh_llm(
         env=env,
-        args=["run", "--profile", "demo", "--runs-dir", str(runs_dir), "--json"],
+        args=base_run_args,
         cwd=repo_root,
     )
-    assert run_non_mock.returncode != 0
+    assert run_non_mock.returncode != 0, run_non_mock.stderr or run_non_mock.stdout
     non_mock_payload = _json_line(run_non_mock)
     assert non_mock_payload["ok"] is False
     assert non_mock_payload["failure"]["classification"] == "credential_or_config"
@@ -83,10 +85,10 @@ def test_cli_smoke_offline_mock_mode_and_missing_key(tmp_path: Path) -> None:
     # Mock Stage A-only.
     run_mock_a = _run_oh_llm(
         env=env,
-        args=["run", "--profile", "demo", "--runs-dir", str(runs_dir), "--json", "--mock"],
+        args=[*base_run_args, "--mock"],
         cwd=repo_root,
     )
-    assert run_mock_a.returncode == 0
+    assert run_mock_a.returncode == 0, run_mock_a.stderr or run_mock_a.stdout
     mock_a_payload = _json_line(run_mock_a)
     assert mock_a_payload["ok"] is True
     assert mock_a_payload["stages"]["A"]["status"] == "pass"
@@ -95,12 +97,7 @@ def test_cli_smoke_offline_mock_mode_and_missing_key(tmp_path: Path) -> None:
     run_mock_b_native = _run_oh_llm(
         env=env,
         args=[
-            "run",
-            "--profile",
-            "demo",
-            "--runs-dir",
-            str(runs_dir),
-            "--json",
+            *base_run_args,
             "--mock",
             "--stage-b",
             "--mock-stage-b-mode",
@@ -108,7 +105,7 @@ def test_cli_smoke_offline_mock_mode_and_missing_key(tmp_path: Path) -> None:
         ],
         cwd=repo_root,
     )
-    assert run_mock_b_native.returncode == 0
+    assert run_mock_b_native.returncode == 0, run_mock_b_native.stderr or run_mock_b_native.stdout
     native_payload = _json_line(run_mock_b_native)
     assert native_payload["ok"] is True
     assert native_payload["stages"]["B"]["status"] == "pass"
@@ -116,12 +113,7 @@ def test_cli_smoke_offline_mock_mode_and_missing_key(tmp_path: Path) -> None:
     run_mock_b_compat = _run_oh_llm(
         env=env,
         args=[
-            "run",
-            "--profile",
-            "demo",
-            "--runs-dir",
-            str(runs_dir),
-            "--json",
+            *base_run_args,
             "--mock",
             "--stage-b",
             "--mock-stage-b-mode",
@@ -129,7 +121,7 @@ def test_cli_smoke_offline_mock_mode_and_missing_key(tmp_path: Path) -> None:
         ],
         cwd=repo_root,
     )
-    assert run_mock_b_compat.returncode == 0
+    assert run_mock_b_compat.returncode == 0, run_mock_b_compat.stderr or run_mock_b_compat.stdout
     compat_payload = _json_line(run_mock_b_compat)
     assert compat_payload["ok"] is True
     assert compat_payload["stages"]["B"]["status"] == "pass"
