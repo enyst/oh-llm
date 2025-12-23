@@ -120,14 +120,16 @@ def write_capsule_artifacts(
     except OSError:
         pass
 
-    repro_script_path.write_text(
-        _repro_script_text(run_dir=run_dir, run_record=run_record),
-        encoding="utf-8",
-    )
-    try:
-        repro_script_path.chmod(0o700)
-    except OSError:
-        pass
+    # If a custom repro harness already exists (e.g. for debugging or tests), keep it.
+    if not repro_script_path.exists():
+        repro_script_path.write_text(
+            _repro_script_text(run_dir=run_dir, run_record=run_record),
+            encoding="utf-8",
+        )
+        try:
+            repro_script_path.chmod(0o700)
+        except OSError:
+            pass
 
     capsule_md_path.write_text(_capsule_md(capsule), encoding="utf-8")
     try:
