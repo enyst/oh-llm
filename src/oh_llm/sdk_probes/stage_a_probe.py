@@ -22,6 +22,11 @@ def _ensure_oh_llm_importable() -> None:
 
 _ensure_oh_llm_importable()
 from oh_llm.failures import classify_text  # noqa: E402
+from oh_llm.prompts import stage_a_user_prompt  # noqa: E402
+
+
+def _prompt() -> str:
+    return stage_a_user_prompt()
 
 
 def _success_payload(
@@ -107,7 +112,7 @@ def main() -> None:
         messages = [
             Message(
                 role="user",
-                content=[TextContent(text="Say hello in one word.")],
+                content=[TextContent(text=_prompt())],
             )
         ]
         response = llm.completion(messages, temperature=0, max_tokens=16)
