@@ -280,6 +280,86 @@ def test_autofix_pr_handles_renames_in_worktree(
     assert pr_result.exit_code == ExitCode.OK
 
 
+def test_autofix_pr_dry_run_does_not_push_or_create_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _setup_sdk_repo(tmp_path, monkeypatch)
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    run_dir = _write_run(
+        runs_dir,
+        dirname="20250102_000000_demo_dryrun",
+        run_id="run_dryrun",
+        profile_name="demo",
+        secret_env="TEST_SECRET_ENV",
+    )
+    _write_validation_ok(run_dir / "artifacts")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "autofix",
+            "worktree",
+            "--run",
+            run_dir.name,
+            "--runs-dir",
+            str(runs_dir),
+            "--keep-worktree",
+            "--json",
+        ],
+    )
+    assert result.exit_code == ExitCode.OK
+    payload = json.loads(result.stdout)
+    worktree_path = Path(payload["worktree"]["worktree"]["path"])
+    (worktree_path / "README.md").write_text("sdk changed\n", encoding="utf-8")
+
+    fork_repo = tmp_path / "fork.git"
+    fork_repo.mkdir()
+    _git(fork_repo, "init", "--bare")
+
+    gh_log = tmp_path / "gh.log"
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    _write_fake_gh(fake_bin, log_path=gh_log)
+    monkeypatch.setenv("GH_LOG", str(gh_log))
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH','')}")
+
+    pr_result = runner.invoke(
+        app,
+        [
+            "autofix",
+            "pr",
+            "--run",
+            run_dir.name,
+            "--runs-dir",
+            str(runs_dir),
+            "--fork-url",
+            str(fork_repo),
+            "--fork-owner",
+            "testuser",
+            "--dry-run",
+            "--json",
+        ],
+    )
+    assert pr_result.exit_code == ExitCode.OK
+    pr_payload = json.loads(pr_result.stdout)
+    assert pr_payload["ok"] is True
+    assert pr_payload["dry_run"] is True
+    assert pr_payload["pr_url"] is None
+
+    pr_record_path = Path(pr_payload["artifacts"]["pr_record_json"])
+    assert pr_record_path.name == "autofix_upstream_pr_dry_run.json"
+
+    gh_calls = gh_log.read_text(encoding="utf-8")
+    assert "pr create" not in gh_calls
+
+    refs = _git(fork_repo, "for-each-ref", "refs/heads").stdout
+    assert refs.strip() == ""
+
+
 def test_autofix_pr_refuses_when_validation_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
