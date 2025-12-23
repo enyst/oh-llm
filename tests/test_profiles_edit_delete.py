@@ -147,3 +147,21 @@ def test_profile_edit_rejects_conflicting_base_url_flags(
         ["profile", "edit", "demo", "--base-url", "https://example.invalid", "--clear-base-url"],
     )
     assert result.exit_code == ExitCode.RUN_FAILED
+    assert "conflict" in result.stdout.lower()
+
+
+def test_profile_edit_requires_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    runner = CliRunner()
+
+    created = runner.invoke(
+        app,
+        ["profile", "add", "demo", "--model", "gpt-5-mini", "--api-key-env", "DEMO_API_KEY"],
+    )
+    assert created.exit_code == ExitCode.OK
+
+    no_changes = runner.invoke(app, ["profile", "edit", "demo", "--json"])
+    assert no_changes.exit_code == ExitCode.RUN_FAILED
+    payload = json.loads(no_changes.stdout)
+    assert payload["ok"] is False
+    assert payload["error"] == "no_changes"

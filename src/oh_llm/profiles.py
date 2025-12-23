@@ -181,9 +181,12 @@ def update_profile(
         sdk_changed = True
 
     if clear_base_url:
-        if "base_url" in sdk_payload:
-            sdk_payload.pop("base_url", None)
-            sdk_changed = True
+        if not sdk_payload and not sdk_exists and model is None:
+            raise ValueError("Cannot clear base_url without an existing SDK profile or --model.")
+        if "model" not in sdk_payload and model is None:
+            raise ValueError("SDK profile is missing 'model'; re-add or edit with --model.")
+        sdk_payload.pop("base_url", None)
+        sdk_changed = True
     elif base_url is not None:
         if not sdk_payload and not sdk_exists and model is None:
             raise ValueError("Cannot update base_url without an existing SDK profile or --model.")

@@ -724,6 +724,20 @@ def profile_edit(
 ) -> None:
     """Edit an existing LLM profile (non-secret fields only)."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    if model is None and base_url is None and not clear_base_url and api_key_env is None:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "no_changes",
+                "hint": (
+                    "Provide at least one of --model, --base-url, --clear-base-url, "
+                    "or --api-key-env."
+                ),
+            },
+            text="No changes requested.",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
     if base_url is not None and clear_base_url:
         _emit(
             cli_ctx,
