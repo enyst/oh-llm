@@ -1308,7 +1308,7 @@ def autofix_validate(
         stage="a",
     )
     payload_a = parse_json_stdout(result_a) or {}
-    stage_a_ok = bool(payload_a.get("ok") is True) and result_a.exit_code == 0
+    stage_a_ok = payload_a.get("ok") is True and result_a.exit_code == 0
 
     result_b = run_repro_stage(
         worktree_path=worktree_path,
@@ -1316,7 +1316,7 @@ def autofix_validate(
         stage="b",
     )
     payload_b = parse_json_stdout(result_b) or {}
-    stage_b_ok = bool(payload_b.get("ok") is True) and result_b.exit_code == 0
+    stage_b_ok = payload_b.get("ok") is True and result_b.exit_code == 0
 
     stage_a_artifact = artifacts_dir / "autofix_validation_stage_a.json"
     stage_b_artifact = artifacts_dir / "autofix_validation_stage_b.json"
