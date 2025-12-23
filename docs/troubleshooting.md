@@ -4,6 +4,10 @@ This doc is intentionally pragmatic: what failed, where to look, and what to do 
 
 ## Where to look first
 
+By default, runs live under `~/.oh-llm/runs/`, but this is configurable:
+- CLI: `oh-llm run ... --runs-dir <path>`
+- Env: `OH_LLM_RUNS_DIR=<path>`
+
 - Run JSON: `~/.oh-llm/runs/<run>/run.json`
 - Run log: `~/.oh-llm/runs/<run>/logs/run.log`
 - Stage artifacts: `~/.oh-llm/runs/<run>/artifacts/`
@@ -84,4 +88,3 @@ Recommended: only when you’ve ruled out credential/config errors.
 
 - If classification is `credential_or_config`, fix config first (or pass `--force` if you know it’s not config).
 - If classification is `sdk_or_provider_bug`, autofix is appropriate.
-
