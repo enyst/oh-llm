@@ -30,7 +30,7 @@ def _run_oh_llm(
 
 def _json_line(proc: subprocess.CompletedProcess[str]) -> dict:
     text = (proc.stdout or "").strip()
-    assert text, proc.stderr or proc.stdout
+    assert text
     return json.loads(text.splitlines()[-1])
 
 
@@ -38,8 +38,15 @@ def _assert_secret_absent(text: str, *, secret_value: str, context: str) -> None
     assert secret_value not in (text or ""), f"secret leaked in {context}"
 
 
+def _redact_secret(text: str, *, secret_value: str) -> str:
+    if not text:
+        return ""
+    return text.replace(secret_value, "<redacted>")
+
+
 def _assert_no_secret_in_tree(root: Path, *, secret_value: str) -> None:
     for path in sorted(root.rglob("*")):
+        _assert_secret_absent(str(path), secret_value=secret_value, context=f"path name: {path}")
         if not path.is_file():
             continue
         try:
@@ -81,7 +88,9 @@ def test_secret_canary_never_leaks_in_mock_run(tmp_path: Path) -> None:
         ],
         cwd=repo_root,
     )
-    assert add_profile.returncode == 0, add_profile.stderr or add_profile.stdout
+    assert add_profile.returncode == 0, _redact_secret(
+        add_profile.stderr or add_profile.stdout, secret_value=secret_value
+    )
     _assert_secret_absent(
         add_profile.stdout, secret_value=secret_value, context="profile add stdout"
     )
@@ -106,13 +115,21 @@ def test_secret_canary_never_leaks_in_mock_run(tmp_path: Path) -> None:
         ],
         cwd=repo_root,
     )
-    assert run_proc.returncode == 0, run_proc.stderr or run_proc.stdout
+    assert run_proc.returncode == 0, _redact_secret(
+        run_proc.stderr or run_proc.stdout, secret_value=secret_value
+    )
     _assert_secret_absent(run_proc.stdout, secret_value=secret_value, context="run stdout")
     _assert_secret_absent(run_proc.stderr, secret_value=secret_value, context="run stderr")
     payload = _json_line(run_proc)
     assert payload["ok"] is True
+    _assert_secret_absent(
+        json.dumps(payload, sort_keys=True),
+        secret_value=secret_value,
+        context="run json payload",
+    )
 
     run_dir = Path(payload["run_dir"])
+    _assert_secret_absent(str(run_dir), secret_value=secret_value, context="run_dir path")
     _assert_no_secret_in_tree(run_dir, secret_value=secret_value)
 
     show_proc = _run_oh_llm(
@@ -120,7 +137,9 @@ def test_secret_canary_never_leaks_in_mock_run(tmp_path: Path) -> None:
         args=["runs", "show", run_dir.name, "--runs-dir", str(runs_dir), "--json"],
         cwd=repo_root,
     )
-    assert show_proc.returncode == 0, show_proc.stderr or show_proc.stdout
+    assert show_proc.returncode == 0, _redact_secret(
+        show_proc.stderr or show_proc.stdout, secret_value=secret_value
+    )
     _assert_secret_absent(show_proc.stdout, secret_value=secret_value, context="runs show stdout")
     _assert_secret_absent(show_proc.stderr, secret_value=secret_value, context="runs show stderr")
     show_payload = _json_line(show_proc)
