@@ -15,6 +15,7 @@ from oh_llm import __version__
 from oh_llm.agent_sdk import (
     AgentSdkError,
     collect_agent_sdk_info,
+    is_git_repo,
     resolve_agent_sdk_path,
     uv_run_python,
 )
@@ -2352,6 +2353,66 @@ def sdk_info(
     lines.append(f"uv available: {info.uv_available}")
 
     _emit(cli_ctx, payload=info.as_json(), text="\n".join(lines))
+
+
+@sdk_app.command("status")
+def sdk_status(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+    path: str | None = typer.Option(
+        None,
+        "--path",
+        help=(
+            "Path to the local agent-sdk checkout "
+            "(default: $OH_LLM_AGENT_SDK_PATH or ~/repos/agent-sdk)."
+        ),
+    ),
+) -> None:
+    """Check SDK checkout status (exists + git SHA + dirty)."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    agent_sdk_path = resolve_agent_sdk_path(Path(path) if path else None)
+
+    if not agent_sdk_path.exists():
+        payload = {
+            "ok": False,
+            "sdk_path": str(agent_sdk_path),
+            "git_sha": None,
+            "dirty": None,
+            "error": "missing_path",
+            "hint": (
+                "Clone OpenHands/software-agent-sdk to ~/repos/agent-sdk, "
+                "or set $OH_LLM_AGENT_SDK_PATH."
+            ),
+        }
+        _emit(cli_ctx, payload=payload, text=f"agent-sdk not found: {agent_sdk_path}")
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    if not is_git_repo(agent_sdk_path):
+        payload = {
+            "ok": False,
+            "sdk_path": str(agent_sdk_path),
+            "git_sha": None,
+            "dirty": None,
+            "error": "not_git_repo",
+            "hint": "The agent-sdk path must be a git checkout (expected a repo root).",
+        }
+        _emit(cli_ctx, payload=payload, text=f"agent-sdk is not a git repo: {agent_sdk_path}")
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    info = collect_agent_sdk_info(agent_sdk_path)
+    payload = {
+        "ok": True,
+        "sdk_path": str(info.path),
+        "git_sha": info.git_sha,
+        "dirty": info.git_dirty,
+    }
+    dirty = " (dirty)" if info.git_dirty else ""
+    text = f"agent-sdk OK: {info.path}\nsha: {info.git_sha}{dirty}"
+    _emit(cli_ctx, payload=payload, text=text)
 
 
 @sdk_app.command("check-import")
