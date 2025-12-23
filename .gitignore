@@ -208,3 +208,6 @@ __marimo__/
 
 # Beads (keep local-only)
 .beads/
+
+# Tool logs
+logs/
