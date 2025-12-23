@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from shutil import which
 
 import pytest
 
@@ -55,30 +56,49 @@ def _write_fake_openhands(tmp_path: Path, *, secret_value: str) -> Path:
 def _write_repro_script(artifacts_dir: Path, *, secret_env: str) -> Path:
     script_path = artifacts_dir / "autofix_repro.py"
     # Intentionally read secrets from env at runtime (so the file itself never contains them).
-    print_line = (
-        'print(json.dumps({"ok": True, "note": f"secret={secret}", "stage": args.stage}))'
-    )
+    print_line = 'print(json.dumps({"ok": True, "note": f"secret={secret}", "stage": args.stage}))'
     script_path.write_text(
-        "\n".join(
-            [
-                "#!/usr/bin/env python3",
-                "from __future__ import annotations",
-                "import argparse, json, os, sys",
-                "p=argparse.ArgumentParser(); p.add_argument('--stage', required=True)",
-                "args=p.parse_args()",
-                f'secret = os.environ.get("{secret_env}", "")',
-                print_line,
-                "sys.exit(0)",
-            ]
-        )
-        + "\n",
+        (
+            "#!/usr/bin/env python3\n"
+            "from __future__ import annotations\n"
+            "\n"
+            "import argparse\n"
+            "import json\n"
+            "import os\n"
+            "import sys\n"
+            "\n"
+            "def main() -> int:\n"
+            "    parser = argparse.ArgumentParser()\n"
+            "    parser.add_argument('--stage', required=True)\n"
+            "    args = parser.parse_args()\n"
+            f"    secret = os.environ.get({secret_env!r}, '')\n"
+            f"    {print_line}\n"
+            "    return 0\n"
+            "\n"
+            "if __name__ == '__main__':\n"
+            "    sys.exit(main())\n"
+        ),
         encoding="utf-8",
     )
     script_path.chmod(0o700)
     return script_path
 
 
+def _assert_no_secret_in_artifacts(artifacts_dir: Path, *, secret_value: str) -> None:
+    for path in sorted(artifacts_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        assert secret_value not in text, f"secret leaked in {path}"
+
+
 def test_autofix_dry_run_smoke_offline(tmp_path: Path) -> None:
+    if which("uv") is None:
+        pytest.skip("uv is required for this e2e test")
+
     repo_root = _repo_root()
 
     secret_env = "TEST_SECRET_ENV"
@@ -163,11 +183,4 @@ def test_autofix_dry_run_smoke_offline(tmp_path: Path) -> None:
     assert refs.strip() == ""
 
     # Ensure the secret value is not present in any generated artifacts.
-    for path in sorted(artifacts_dir.rglob("*")):
-        if not path.is_file():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        assert secret_value not in text, f"secret leaked in {path}"
+    _assert_no_secret_in_artifacts(artifacts_dir, secret_value=secret_value)
