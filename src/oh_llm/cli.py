@@ -1990,10 +1990,20 @@ def _autofix_pr_impl(
     commit_sha = ensure_commit(repo=worktree_path, message=commit_message, selection=selection)
     branch = current_branch(worktree_path)
 
-    owner = fork_owner or (None if dry_run else gh_user_login(worktree_path))
-    remote_url = fork_url or (
-        f"https://github.com/{owner}/software-agent-sdk.git" if owner else None
-    )
+    if fork_owner:
+        owner = fork_owner
+    elif dry_run:
+        owner = None
+    else:
+        owner = gh_user_login(worktree_path)
+
+    pr_head = f"{owner}:{branch}" if owner else None
+    if fork_url:
+        remote_url = fork_url
+    elif owner:
+        remote_url = f"https://github.com/{owner}/software-agent-sdk.git"
+    else:
+        remote_url = None
 
     diffstat = git_show_stat(worktree_path, rev="HEAD")
     body_text = render_pr_body(
@@ -2014,9 +2024,22 @@ def _autofix_pr_impl(
         pass
 
     pr_title = title or commit_message
+    record_path = dry_run_record_path if dry_run else pr_record_path
+    result_base: dict[str, Any] = {
+        "url": None,
+        "existing": False,
+        "dry_run": dry_run,
+        "worktree_path": str(worktree_path),
+        "upstream_repo": upstream_repo,
+        "base": base,
+        "head": pr_head,
+        "title": pr_title,
+        "draft": draft,
+        "artifacts": {"pr_record_json": str(record_path), "pr_body_md": str(body_path)},
+    }
+
     if dry_run:
         created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-        record_path = dry_run_record_path
         write_validation_artifact(
             path=record_path,
             payload={
@@ -2034,7 +2057,7 @@ def _autofix_pr_impl(
                     "dry_run": True,
                     "upstream_repo": upstream_repo,
                     "base": base,
-                    "head": (f"{owner}:{branch}" if owner else None),
+                    "head": pr_head,
                     "title": pr_title,
                     "body_file": str(body_path),
                     "draft": draft,
@@ -2043,18 +2066,7 @@ def _autofix_pr_impl(
             redactor=redactor,
         )
 
-        return {
-            "url": None,
-            "existing": False,
-            "dry_run": True,
-            "worktree_path": str(worktree_path),
-            "upstream_repo": upstream_repo,
-            "base": base,
-            "head": (f"{owner}:{branch}" if owner else None),
-            "title": pr_title,
-            "draft": draft,
-            "artifacts": {"pr_record_json": str(record_path), "pr_body_md": str(body_path)},
-        }
+        return result_base
 
     if remote_url is None:
         _emit(
@@ -2094,7 +2106,7 @@ def _autofix_pr_impl(
             repo=worktree_path,
             upstream_repo=upstream_repo,
             base=base,
-            head=f"{owner}:{branch}",
+            head=pr_head,
             title=pr_title,
             body_file=body_path,
             draft=draft,
@@ -2109,11 +2121,11 @@ def _autofix_pr_impl(
                 "branch": branch,
                 "commit": commit_sha,
                 "body_file": str(body_path),
-                "head": f"{owner}:{branch}",
+                "head": pr_head,
             },
             text=(
                 "Failed to create upstream PR. You can retry manually:\n"
-                f"  gh pr create --repo {upstream_repo} --base {base} --head {owner}:{branch} "
+                f"  gh pr create --repo {upstream_repo} --base {base} --head {pr_head} "
                 f"--title {json.dumps(pr_title)} --body-file {body_path}\n"
             ),
         )
@@ -2138,7 +2150,7 @@ def _autofix_pr_impl(
                 "url": pr_url,
                 "upstream_repo": upstream_repo,
                 "base": base,
-                "head": f"{owner}:{branch}",
+                "head": pr_head,
                 "title": pr_title,
                 "body_file": str(body_path),
                 "draft": draft,
@@ -2147,18 +2159,9 @@ def _autofix_pr_impl(
         redactor=redactor,
     )
 
-    return {
-        "url": pr_url,
-        "existing": False,
-        "dry_run": False,
-        "worktree_path": str(worktree_path),
-        "upstream_repo": upstream_repo,
-        "base": base,
-        "head": f"{owner}:{branch}",
-        "title": pr_title,
-        "draft": draft,
-        "artifacts": {"pr_record_json": str(pr_record_path), "pr_body_md": str(body_path)},
-    }
+    result = dict(result_base)
+    result["url"] = pr_url
+    return result
 
 
 @autofix_app.command("pr")
