@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import IntEnum
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,11 @@ from oh_llm.agent_sdk import (
 )
 from oh_llm.autofix_capsule import extract_redact_env, write_capsule_artifacts
 from oh_llm.autofix_openhands import OpenHandsError, resolve_openhands_bin, run_openhands_agent
+from oh_llm.autofix_validation import (
+    parse_json_stdout,
+    run_repro_stage,
+    write_validation_artifact,
+)
 from oh_llm.failures import failure_from_stages, update_run_failure
 from oh_llm.profiles import get_profile, list_profiles, upsert_profile
 from oh_llm.redaction import Redactor, redactor_from_env_vars
@@ -1201,6 +1207,198 @@ def autofix_agent(
     )
     raise typer.Exit(code=ExitCode.OK)
 
+
+@autofix_app.command("validate")
+def autofix_validate(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+    run: str = typer.Option(
+        ...,
+        "--run",
+        help="Run id or run directory name/prefix to validate.",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    agent_sdk_path: str | None = typer.Option(
+        None,
+        "--agent-sdk-path",
+        help="Path to agent-sdk checkout (default: $OH_LLM_AGENT_SDK_PATH or ~/repos/agent-sdk).",
+    ),
+    allow_dirty_sdk: bool = typer.Option(
+        False,
+        "--allow-dirty-sdk",
+        help="Allow creating a worktree from a dirty agent-sdk checkout (unsafe).",
+    ),
+    redact_env: list[str] = typer.Option(
+        [],
+        "--redact-env",
+        help="Environment variable name to redact from validation artifacts (repeatable).",
+    ),
+) -> None:
+    """Validate a fix in the agent-sdk worktree by running the repro harness."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+
+    try:
+        run_dir = resolve_run_dir(resolved_runs_dir, run)
+    except (RunNotFoundError, RunAmbiguousError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    record = read_run_record(run_dir)
+    if record is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json missing or corrupt", "run_dir": str(run_dir)},
+            text=f"run.json missing or corrupt in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    redaction_names = sorted(set([*extract_redact_env(record), *redact_env]))
+    redactor = redactor_from_env_vars(*redaction_names)
+
+    # Ensure worktree exists (create if missing). Validation runs inside the worktree.
+    resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
+    worktree_path = run_dir / "artifacts" / "autofix_sdk_worktree"
+    worktree_record_path = run_dir / "artifacts" / "autofix_worktree.json"
+
+    if not worktree_path.exists():
+        run_id = str(record.get("run_id") or run_dir.name).strip()
+        profile_obj = record.get("profile") if isinstance(record.get("profile"), dict) else {}
+        profile_name = str(profile_obj.get("name") or "unknown").strip()
+        created = create_sdk_worktree(
+            agent_sdk_path=resolved_sdk_path,
+            worktree_path=worktree_path,
+            profile_name=profile_name,
+            run_id=run_id,
+            allow_dirty=allow_dirty_sdk,
+            keep_worktree=True,
+        )
+        write_worktree_record(worktree_record_path, record=created)
+
+    artifacts_dir = run_dir / "artifacts"
+    repro_script_path = artifacts_dir / "autofix_repro.py"
+    if not repro_script_path.exists():
+        repro_script_path = write_capsule_artifacts(
+            run_dir=run_dir,
+            run_record=record,
+            redactor=redactor,
+        ).repro_script
+
+    if not repro_script_path.exists():
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "missing_repro_script", "run_dir": str(run_dir)},
+            text=f"Missing repro script: {repro_script_path}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    result_a = run_repro_stage(
+        worktree_path=worktree_path,
+        repro_script_path=repro_script_path,
+        stage="a",
+    )
+    payload_a = parse_json_stdout(result_a) or {}
+    stage_a_ok = payload_a.get("ok") is True and result_a.exit_code == 0
+
+    result_b = run_repro_stage(
+        worktree_path=worktree_path,
+        repro_script_path=repro_script_path,
+        stage="b",
+    )
+    payload_b = parse_json_stdout(result_b) or {}
+    stage_b_ok = payload_b.get("ok") is True and result_b.exit_code == 0
+
+    stage_a_artifact = artifacts_dir / "autofix_validation_stage_a.json"
+    stage_b_artifact = artifacts_dir / "autofix_validation_stage_b.json"
+
+    write_validation_artifact(
+        path=stage_a_artifact,
+        payload={
+            "schema_version": 1,
+            "created_at": created_at,
+            "stage": "a",
+            "ok": stage_a_ok,
+            "command_result": result_a.as_json(),
+            "stdout_json": payload_a,
+        },
+        redactor=redactor,
+    )
+    write_validation_artifact(
+        path=stage_b_artifact,
+        payload={
+            "schema_version": 1,
+            "created_at": created_at,
+            "stage": "b",
+            "ok": stage_b_ok,
+            "command_result": result_b.as_json(),
+            "stdout_json": payload_b,
+        },
+        redactor=redactor,
+    )
+
+    overall_ok = stage_a_ok and stage_b_ok
+
+    summary_path = artifacts_dir / "autofix_validation.json"
+    summary_md_path = artifacts_dir / "autofix_validation.md"
+    write_validation_artifact(
+        path=summary_path,
+        payload={
+            "schema_version": 1,
+            "created_at": created_at,
+            "run_dir": str(run_dir),
+            "worktree_path": str(worktree_path),
+            "repro_script": str(repro_script_path),
+            "ok": overall_ok,
+            "stages": {"a": {"ok": stage_a_ok}, "b": {"ok": stage_b_ok}},
+            "artifacts": {
+                "stage_a": str(stage_a_artifact),
+                "stage_b": str(stage_b_artifact),
+            },
+        },
+        redactor=redactor,
+    )
+
+    summary_md_path.write_text(
+        redactor.redact_text(
+            "# oh-llm autofix validation\n\n"
+            f"- ok: `{overall_ok}`\n"
+            f"- run_dir: `{run_dir}`\n"
+            f"- worktree_path: `{worktree_path}`\n"
+            f"- repro_script: `{repro_script_path}`\n"
+        ),
+        encoding="utf-8",
+    )
+    try:
+        summary_md_path.chmod(0o600)
+    except OSError:
+        pass
+
+    _emit(
+        cli_ctx,
+        payload={
+            "ok": overall_ok,
+            "run_dir": str(run_dir),
+            "worktree_path": str(worktree_path),
+            "artifacts": {
+                "validation_json": str(summary_path),
+                "validation_md": str(summary_md_path),
+                "stage_a": str(stage_a_artifact),
+                "stage_b": str(stage_b_artifact),
+            },
+        },
+        text=f"Wrote validation artifacts under: {artifacts_dir}",
+    )
+    raise typer.Exit(code=ExitCode.OK if overall_ok else ExitCode.RUN_FAILED)
 
 @app.command()
 def tui(
