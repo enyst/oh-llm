@@ -883,6 +883,7 @@ def _autofix_pipeline(
     push_remote: str,
     title: str | None,
     draft: bool,
+    dry_run: bool,
 ) -> None:
     failure = _autofix_failure(record)
     classification_value = failure.get("classification")
@@ -1018,6 +1019,7 @@ def _autofix_pipeline(
         push_remote=push_remote,
         title=title,
         draft=draft,
+        dry_run=dry_run,
     )
 
     _emit(
@@ -1039,7 +1041,11 @@ def _autofix_pipeline(
                 "validation_md": str(artifacts_dir / "autofix_validation.md"),
             },
         },
-        text=f"Created upstream PR: {pr_payload.get('url')}",
+        text=(
+            f"Created upstream PR: {pr_payload.get('url')}"
+            if not dry_run
+            else "Dry-run: prepared upstream PR artifacts (no push, no PR created)."
+        ),
     )
     raise typer.Exit(code=ExitCode.OK)
 
@@ -1120,6 +1126,11 @@ def autofix(
         "--draft",
         help="Create PR as a draft.",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Do everything except push branches or open PRs.",
+    ),
     redact_env: list[str] = typer.Option(
         [],
         "--redact-env",
@@ -1166,6 +1177,7 @@ def autofix(
         push_remote=push_remote,
         title=title,
         draft=draft,
+        dry_run=dry_run,
     )
 
 
@@ -1245,6 +1257,11 @@ def autofix_start(
         "--draft",
         help="Create PR as a draft.",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Do everything except push branches or open PRs.",
+    ),
     redact_env: list[str] = typer.Option(
         [],
         "--redact-env",
@@ -1290,6 +1307,7 @@ def autofix_start(
         push_remote=push_remote,
         title=title,
         draft=draft,
+        dry_run=dry_run,
     )
 
 
@@ -1866,9 +1884,11 @@ def _autofix_pr_impl(
     push_remote: str,
     title: str | None,
     draft: bool,
+    dry_run: bool,
 ) -> dict[str, Any]:
     artifacts_dir = run_dir / "artifacts"
     pr_record_path = artifacts_dir / "autofix_upstream_pr.json"
+    dry_run_record_path = artifacts_dir / "autofix_upstream_pr_dry_run.json"
     worktree_path = artifacts_dir / "autofix_sdk_worktree"
     if pr_record_path.exists():
         try:
@@ -1970,8 +1990,95 @@ def _autofix_pr_impl(
     commit_sha = ensure_commit(repo=worktree_path, message=commit_message, selection=selection)
     branch = current_branch(worktree_path)
 
-    owner = fork_owner or gh_user_login(worktree_path)
-    remote_url = fork_url or f"https://github.com/{owner}/software-agent-sdk.git"
+    if fork_owner:
+        owner = fork_owner
+    elif dry_run:
+        owner = None
+    else:
+        owner = gh_user_login(worktree_path)
+
+    pr_head = f"{owner}:{branch}" if owner else None
+    if fork_url:
+        remote_url = fork_url
+    elif owner:
+        remote_url = f"https://github.com/{owner}/software-agent-sdk.git"
+    else:
+        remote_url = None
+
+    diffstat = git_show_stat(worktree_path, rev="HEAD")
+    body_text = render_pr_body(
+        profile_name=profile_name,
+        run_id=run_id,
+        model=model,
+        base_url=base_url,
+        validation=validation if isinstance(validation, dict) else {},
+        diffstat=diffstat,
+        redactor=redactor,
+    )
+    body_path = artifacts_dir / "autofix_upstream_pr_body.md"
+    body_path.parent.mkdir(parents=True, exist_ok=True)
+    body_path.write_text(body_text, encoding="utf-8")
+    try:
+        body_path.chmod(0o600)
+    except OSError:
+        pass
+
+    pr_title = title or commit_message
+    record_path = dry_run_record_path if dry_run else pr_record_path
+    result_base: dict[str, Any] = {
+        "url": None,
+        "existing": False,
+        "dry_run": dry_run,
+        "worktree_path": str(worktree_path),
+        "upstream_repo": upstream_repo,
+        "base": base,
+        "head": pr_head,
+        "title": pr_title,
+        "draft": draft,
+        "artifacts": {"pr_record_json": str(record_path), "pr_body_md": str(body_path)},
+    }
+
+    if dry_run:
+        created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        write_validation_artifact(
+            path=record_path,
+            payload={
+                "schema_version": 1,
+                "created_at": created_at,
+                "run_dir": str(run_dir),
+                "worktree_path": str(worktree_path),
+                "validation": {"ok": True, "path": str(validation_path)},
+                "git": {
+                    "branch": branch,
+                    "commit": commit_sha,
+                    "selection": selection.as_json(),
+                },
+                "pr": {
+                    "dry_run": True,
+                    "upstream_repo": upstream_repo,
+                    "base": base,
+                    "head": pr_head,
+                    "title": pr_title,
+                    "body_file": str(body_path),
+                    "draft": draft,
+                },
+            },
+            redactor=redactor,
+        )
+
+        return result_base
+
+    if remote_url is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "missing_fork_owner", "run_dir": str(run_dir)},
+            text=(
+                "Missing fork owner (required to push PR branch). "
+                "Pass --fork-owner or login to gh."
+            ),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
     ensure_remote(worktree_path, remote=push_remote, url=remote_url)
 
     try:
@@ -1994,31 +2101,12 @@ def _autofix_pr_impl(
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
 
-    diffstat = git_show_stat(worktree_path, rev="HEAD")
-    body_text = render_pr_body(
-        profile_name=profile_name,
-        run_id=run_id,
-        model=model,
-        base_url=base_url,
-        validation=validation if isinstance(validation, dict) else {},
-        diffstat=diffstat,
-        redactor=redactor,
-    )
-    body_path = artifacts_dir / "autofix_upstream_pr_body.md"
-    body_path.parent.mkdir(parents=True, exist_ok=True)
-    body_path.write_text(body_text, encoding="utf-8")
-    try:
-        body_path.chmod(0o600)
-    except OSError:
-        pass
-
-    pr_title = title or commit_message
     try:
         pr_url = gh_pr_create(
             repo=worktree_path,
             upstream_repo=upstream_repo,
             base=base,
-            head=f"{owner}:{branch}",
+            head=pr_head,
             title=pr_title,
             body_file=body_path,
             draft=draft,
@@ -2033,11 +2121,11 @@ def _autofix_pr_impl(
                 "branch": branch,
                 "commit": commit_sha,
                 "body_file": str(body_path),
-                "head": f"{owner}:{branch}",
+                "head": pr_head,
             },
             text=(
                 "Failed to create upstream PR. You can retry manually:\n"
-                f"  gh pr create --repo {upstream_repo} --base {base} --head {owner}:{branch} "
+                f"  gh pr create --repo {upstream_repo} --base {base} --head {pr_head} "
                 f"--title {json.dumps(pr_title)} --body-file {body_path}\n"
             ),
         )
@@ -2062,7 +2150,7 @@ def _autofix_pr_impl(
                 "url": pr_url,
                 "upstream_repo": upstream_repo,
                 "base": base,
-                "head": f"{owner}:{branch}",
+                "head": pr_head,
                 "title": pr_title,
                 "body_file": str(body_path),
                 "draft": draft,
@@ -2071,17 +2159,9 @@ def _autofix_pr_impl(
         redactor=redactor,
     )
 
-    return {
-        "url": pr_url,
-        "existing": False,
-        "worktree_path": str(worktree_path),
-        "upstream_repo": upstream_repo,
-        "base": base,
-        "head": f"{owner}:{branch}",
-        "title": pr_title,
-        "draft": draft,
-        "artifacts": {"pr_record_json": str(pr_record_path), "pr_body_md": str(body_path)},
-    }
+    result = dict(result_base)
+    result["url"] = pr_url
+    return result
 
 
 @autofix_app.command("pr")
@@ -2150,6 +2230,11 @@ def autofix_pr(
         "--draft",
         help="Create PR as a draft.",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Prepare PR artifacts but do not push or create a PR.",
+    ),
     redact_env: list[str] = typer.Option(
         [],
         "--redact-env",
@@ -2193,6 +2278,7 @@ def autofix_pr(
         push_remote=push_remote,
         title=title,
         draft=draft,
+        dry_run=dry_run,
     )
 
     artifacts_value = pr_payload.get("artifacts")
@@ -2205,8 +2291,13 @@ def autofix_pr(
             "worktree_path": pr_payload.get("worktree_path"),
             "pr_url": pr_payload.get("url"),
             "artifacts": pr_artifacts,
+            "dry_run": pr_payload.get("dry_run") is True,
         },
-        text=f"Created upstream PR: {pr_payload.get('url')}",
+        text=(
+            "Dry-run: prepared upstream PR artifacts (no push, no PR created)."
+            if pr_payload.get("dry_run") is True
+            else f"Created upstream PR: {pr_payload.get('url')}"
+        ),
     )
     raise typer.Exit(code=ExitCode.OK)
 
