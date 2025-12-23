@@ -37,7 +37,13 @@ from oh_llm.autofix_validation import (
     write_validation_artifact,
 )
 from oh_llm.failures import failure_from_stages, update_run_failure
-from oh_llm.profiles import get_profile, list_profiles, upsert_profile
+from oh_llm.profiles import (
+    delete_profile,
+    get_profile,
+    list_profiles,
+    update_profile,
+    upsert_profile,
+)
 from oh_llm.redaction import Redactor, redactor_from_env_vars
 from oh_llm.run_store import (
     append_log,
@@ -684,6 +690,100 @@ def profile_show(
         raise typer.Exit(code=ExitCode.RUN_FAILED)
 
     _emit(cli_ctx, payload={"ok": True, "profile": record.as_json()}, text=record.profile_id)
+
+
+@profile_app.command("edit")
+def profile_edit(
+    ctx: typer.Context,
+    profile_id: str = typer.Argument(..., help="Profile ID to edit."),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Set model name (litellm model string).",
+    ),
+    base_url: str | None = typer.Option(
+        None,
+        "--base-url",
+        help="Set base URL (use --clear-base-url to remove).",
+    ),
+    clear_base_url: bool = typer.Option(
+        False,
+        "--clear-base-url",
+        help="Remove base_url from the SDK profile.",
+    ),
+    api_key_env: str | None = typer.Option(
+        None,
+        "--api-key-env",
+        help="Set env var name holding the API key (value is never stored).",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+) -> None:
+    """Edit an existing LLM profile (non-secret fields only)."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    if base_url is not None and clear_base_url:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "conflicting_options",
+                "hint": "Use --base-url or --clear-base-url, not both.",
+            },
+            text="Conflicting options: --base-url and --clear-base-url",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    try:
+        record = update_profile(
+            profile_id=profile_id,
+            model=model,
+            base_url=base_url,
+            clear_base_url=clear_base_url,
+            api_key_env=api_key_env,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    _emit(
+        cli_ctx,
+        payload={"ok": True, "profile": record.as_json()},
+        text=f"Updated profile {record.profile_id}.",
+    )
+
+
+@profile_app.command("delete")
+def profile_delete(
+    ctx: typer.Context,
+    profile_id: str = typer.Argument(..., help="Profile ID to delete."),
+    missing_ok: bool = typer.Option(
+        False,
+        "--missing-ok",
+        help="Succeed even if the profile does not exist.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+) -> None:
+    """Delete an LLM profile (SDK profile + oh-llm metadata)."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    try:
+        result = delete_profile(profile_id=profile_id, missing_ok=missing_ok)
+    except (ValueError, FileNotFoundError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    deleted = bool(result.get("deleted"))
+    if deleted:
+        text = f"Deleted profile {profile_id}."
+    else:
+        text = f"Profile {profile_id} not found."
+    _emit(cli_ctx, payload=result, text=text)
 
 
 @runs_app.command("list")
