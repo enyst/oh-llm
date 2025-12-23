@@ -1514,7 +1514,11 @@ def autofix_pr(
     if not worktree_path.exists():
         run_id = str(record.get("run_id") or run_dir.name).strip()
         profile_obj = record.get("profile") if isinstance(record.get("profile"), dict) else {}
-        profile_name_for_branch = str(profile_obj.get("name") or "unknown").strip()
+        profile_name_for_branch = (
+            str(profile_obj.get("name") or "").strip()
+            or str(profile_obj.get("model") or "").strip()
+            or "llm"
+        )
         created = create_sdk_worktree(
             agent_sdk_path=resolved_sdk_path,
             worktree_path=worktree_path,
@@ -1575,7 +1579,7 @@ def autofix_pr(
         raise typer.Exit(code=ExitCode.RUN_FAILED)
 
     profile_obj = record.get("profile") if isinstance(record.get("profile"), dict) else {}
-    profile_name = str(profile_obj.get("name") or "unknown").strip() or None
+    profile_name = str(profile_obj.get("name") or "").strip() or None
     run_id = str(record.get("run_id") or "").strip() or None
     model = str(profile_obj.get("model") or "").strip() or None
     base_url = str(profile_obj.get("base_url") or "").strip() or None
