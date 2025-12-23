@@ -20,6 +20,17 @@ from oh_llm.agent_sdk import (
 )
 from oh_llm.autofix_capsule import extract_redact_env, write_capsule_artifacts
 from oh_llm.autofix_openhands import OpenHandsError, resolve_openhands_bin, run_openhands_agent
+from oh_llm.autofix_pr import (
+    current_branch,
+    ensure_commit,
+    ensure_remote,
+    gh_pr_create,
+    gh_user_login,
+    git_show_stat,
+    push_branch,
+    render_pr_body,
+    select_paths_to_commit,
+)
 from oh_llm.autofix_validation import (
     parse_json_stdout,
     run_repro_stage,
@@ -1399,6 +1410,298 @@ def autofix_validate(
         text=f"Wrote validation artifacts under: {artifacts_dir}",
     )
     raise typer.Exit(code=ExitCode.OK if overall_ok else ExitCode.RUN_FAILED)
+
+
+@autofix_app.command("pr")
+def autofix_pr(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+    run: str = typer.Option(
+        ...,
+        "--run",
+        help="Run id or run directory name/prefix to open an upstream PR for.",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    agent_sdk_path: str | None = typer.Option(
+        None,
+        "--agent-sdk-path",
+        help="Path to agent-sdk checkout (default: $OH_LLM_AGENT_SDK_PATH or ~/repos/agent-sdk).",
+    ),
+    allow_dirty_sdk: bool = typer.Option(
+        False,
+        "--allow-dirty-sdk",
+        help="Allow creating a worktree from a dirty agent-sdk checkout (unsafe).",
+    ),
+    upstream_repo: str = typer.Option(
+        "OpenHands/software-agent-sdk",
+        "--upstream-repo",
+        help="Upstream repo to open the PR against (owner/name).",
+    ),
+    base: str = typer.Option(
+        "main",
+        "--base",
+        help="Base branch in the upstream repo.",
+    ),
+    fork_owner: str | None = typer.Option(
+        None,
+        "--fork-owner",
+        help="Fork owner for the PR head (default: `gh api user --jq .login`).",
+    ),
+    fork_url: str | None = typer.Option(
+        None,
+        "--fork-url",
+        help=(
+            "Fork remote URL to push to (default: "
+            "https://github.com/<fork-owner>/software-agent-sdk.git)."
+        ),
+    ),
+    push_remote: str = typer.Option(
+        "fork",
+        "--push-remote",
+        help="Git remote name to push the worktree branch to (default: fork).",
+    ),
+    title: str | None = typer.Option(
+        None,
+        "--title",
+        help="Override PR title.",
+    ),
+    draft: bool = typer.Option(
+        False,
+        "--draft",
+        help="Create PR as a draft.",
+    ),
+    redact_env: list[str] = typer.Option(
+        [],
+        "--redact-env",
+        help="Environment variable name to redact from generated PR artifacts (repeatable).",
+    ),
+) -> None:
+    """Open an upstream PR for fixes made in the agent-sdk worktree."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+
+    try:
+        run_dir = resolve_run_dir(resolved_runs_dir, run)
+    except (RunNotFoundError, RunAmbiguousError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    record = read_run_record(run_dir)
+    if record is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json missing or corrupt", "run_dir": str(run_dir)},
+            text=f"run.json missing or corrupt in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    redaction_names = sorted(set([*extract_redact_env(record), *redact_env]))
+    redactor = redactor_from_env_vars(*redaction_names)
+
+    resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
+    artifacts_dir = run_dir / "artifacts"
+    worktree_path = artifacts_dir / "autofix_sdk_worktree"
+    worktree_record_path = artifacts_dir / "autofix_worktree.json"
+
+    if not worktree_path.exists():
+        run_id = str(record.get("run_id") or run_dir.name).strip()
+        profile_obj = record.get("profile") if isinstance(record.get("profile"), dict) else {}
+        profile_name_for_branch = (
+            str(profile_obj.get("name") or "").strip()
+            or str(profile_obj.get("model") or "").strip()
+            or "llm"
+        )
+        created = create_sdk_worktree(
+            agent_sdk_path=resolved_sdk_path,
+            worktree_path=worktree_path,
+            profile_name=profile_name_for_branch,
+            run_id=run_id,
+            allow_dirty=allow_dirty_sdk,
+            keep_worktree=True,
+        )
+        write_worktree_record(worktree_record_path, record=created)
+
+    validation_path = artifacts_dir / "autofix_validation.json"
+    if not validation_path.exists():
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "missing_validation", "run_dir": str(run_dir)},
+            text=(
+                "Missing validation artifacts. Run:\n"
+                f"  oh-llm autofix validate --run {run_dir.name}\n"
+                "and retry."
+            ),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    try:
+        validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "invalid_validation_json",
+                "path": str(validation_path),
+            },
+            text=f"Invalid JSON: {validation_path}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    if validation.get("ok") is not True:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "validation_failed", "validation": validation},
+            text="Validation did not pass; refusing to open an upstream PR.",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    selection = select_paths_to_commit(worktree_path)
+    if not selection.paths:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "no_changes",
+                "worktree_path": str(worktree_path),
+                "selection": selection.as_json(),
+            },
+            text="No non-ephemeral changes detected in the SDK worktree; nothing to PR.",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    profile_obj = record.get("profile") if isinstance(record.get("profile"), dict) else {}
+    profile_name = str(profile_obj.get("name") or "").strip() or None
+    run_id = str(record.get("run_id") or "").strip() or None
+    model = str(profile_obj.get("model") or "").strip() or None
+    base_url = str(profile_obj.get("base_url") or "").strip() or None
+
+    commit_message = f"oh-llm autofix: {profile_name or model or 'LLM'} ({run_id or run_dir.name})"
+    commit_sha = ensure_commit(repo=worktree_path, message=commit_message, selection=selection)
+    branch = current_branch(worktree_path)
+
+    owner = fork_owner or gh_user_login(worktree_path)
+    remote_url = fork_url or f"https://github.com/{owner}/software-agent-sdk.git"
+    ensure_remote(worktree_path, remote=push_remote, url=remote_url)
+
+    try:
+        push_branch(worktree_path, remote=push_remote, branch=branch)
+    except AgentSdkError as exc:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": str(exc),
+                "worktree_path": str(worktree_path),
+                "branch": branch,
+                "remote": {"name": push_remote, "url": remote_url},
+            },
+            text=(
+                "Failed to push branch. You can retry manually:\n"
+                f"  git -C {worktree_path} push -u {push_remote} {branch}\n"
+                f"  gh pr create --repo {upstream_repo} --base {base} --head {owner}:{branch}\n"
+            ),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    diffstat = git_show_stat(worktree_path, rev="HEAD")
+    body_text = render_pr_body(
+        profile_name=profile_name,
+        run_id=run_id,
+        model=model,
+        base_url=base_url,
+        validation=validation if isinstance(validation, dict) else {},
+        diffstat=diffstat,
+        redactor=redactor,
+    )
+    body_path = artifacts_dir / "autofix_upstream_pr_body.md"
+    body_path.parent.mkdir(parents=True, exist_ok=True)
+    body_path.write_text(body_text, encoding="utf-8")
+    try:
+        body_path.chmod(0o600)
+    except OSError:
+        pass
+
+    pr_title = title or commit_message
+    try:
+        pr_url = gh_pr_create(
+            repo=worktree_path,
+            upstream_repo=upstream_repo,
+            base=base,
+            head=f"{owner}:{branch}",
+            title=pr_title,
+            body_file=body_path,
+            draft=draft,
+        )
+    except AgentSdkError as exc:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": str(exc),
+                "worktree_path": str(worktree_path),
+                "branch": branch,
+                "commit": commit_sha,
+                "body_file": str(body_path),
+                "head": f"{owner}:{branch}",
+            },
+            text=(
+                "Failed to create upstream PR. You can retry manually:\n"
+                f"  gh pr create --repo {upstream_repo} --base {base} --head {owner}:{branch} "
+                f"--title {json.dumps(pr_title)} --body-file {body_path}\n"
+            ),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    pr_record_path = artifacts_dir / "autofix_upstream_pr.json"
+    write_validation_artifact(
+        path=pr_record_path,
+        payload={
+            "schema_version": 1,
+            "created_at": created_at,
+            "run_dir": str(run_dir),
+            "worktree_path": str(worktree_path),
+            "validation": {"ok": True, "path": str(validation_path)},
+            "git": {
+                "branch": branch,
+                "commit": commit_sha,
+                "push_remote": {"name": push_remote, "url": remote_url},
+                "selection": selection.as_json(),
+            },
+            "pr": {
+                "url": pr_url,
+                "upstream_repo": upstream_repo,
+                "base": base,
+                "head": f"{owner}:{branch}",
+                "title": pr_title,
+                "body_file": str(body_path),
+                "draft": draft,
+            },
+        },
+        redactor=redactor,
+    )
+
+    _emit(
+        cli_ctx,
+        payload={
+            "ok": True,
+            "run_dir": str(run_dir),
+            "worktree_path": str(worktree_path),
+            "pr_url": pr_url,
+            "artifacts": {"pr_record_json": str(pr_record_path), "pr_body_md": str(body_path)},
+        },
+        text=f"Created upstream PR: {pr_url}",
+    )
+    raise typer.Exit(code=ExitCode.OK)
 
 @app.command()
 def tui(
