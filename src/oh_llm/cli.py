@@ -819,6 +819,53 @@ def _autofix_load_worktree_record(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+class AutofixWorktreeMissingError(Exception):
+    def __init__(self, worktree_path: Path) -> None:
+        super().__init__(f"Worktree missing: {worktree_path}")
+        self.worktree_path = worktree_path
+
+
+@dataclass(frozen=True)
+class AutofixWorktree:
+    worktree_path: Path
+    worktree_record_path: Path
+    worktree_record: dict[str, Any] | None
+
+
+def _autofix_ensure_sdk_worktree(
+    *,
+    artifacts_dir: Path,
+    record: dict[str, Any],
+    resolved_sdk_path: Path,
+    allow_dirty_sdk: bool,
+) -> AutofixWorktree:
+    worktree_path = artifacts_dir / "autofix_sdk_worktree"
+    worktree_record_path = artifacts_dir / "autofix_worktree.json"
+    worktree_record = _autofix_load_worktree_record(worktree_record_path)
+
+    if not worktree_path.exists():
+        run_id = str(record.get("run_id") or artifacts_dir.parent.name).strip()
+        created = create_sdk_worktree(
+            agent_sdk_path=resolved_sdk_path,
+            worktree_path=worktree_path,
+            profile_name=_autofix_profile_name_for_branch(record=record),
+            run_id=run_id,
+            allow_dirty=allow_dirty_sdk,
+            keep_worktree=True,
+        )
+        write_worktree_record(worktree_record_path, record=created)
+        worktree_record = created.as_json()
+
+    if not worktree_path.exists():
+        raise AutofixWorktreeMissingError(worktree_path)
+
+    return AutofixWorktree(
+        worktree_path=worktree_path,
+        worktree_record_path=worktree_record_path,
+        worktree_record=worktree_record,
+    )
+
+
 def _autofix_pipeline(
     *,
     cli_ctx: CliContext,
@@ -873,40 +920,34 @@ def _autofix_pipeline(
 
     resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
     artifacts_dir = run_dir / "artifacts"
-    worktree_path = artifacts_dir / "autofix_sdk_worktree"
-    worktree_record_path = artifacts_dir / "autofix_worktree.json"
-
-    worktree_record = _autofix_load_worktree_record(worktree_record_path)
-
-    if not worktree_path.exists():
-        run_id = str(record.get("run_id") or run_dir.name).strip()
-        try:
-            created = create_sdk_worktree(
-                agent_sdk_path=resolved_sdk_path,
-                worktree_path=worktree_path,
-                profile_name=_autofix_profile_name_for_branch(record=record),
-                run_id=run_id,
-                allow_dirty=allow_dirty_sdk,
-                keep_worktree=True,
-            )
-        except AgentSdkError as exc:
-            _emit(
-                cli_ctx,
-                payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
-                text=str(exc),
-            )
-            raise typer.Exit(code=ExitCode.RUN_FAILED)
-
-        write_worktree_record(worktree_record_path, record=created)
-        worktree_record = created.as_json()
-
-    if not worktree_path.exists():
+    try:
+        ensured = _autofix_ensure_sdk_worktree(
+            artifacts_dir=artifacts_dir,
+            record=record,
+            resolved_sdk_path=resolved_sdk_path,
+            allow_dirty_sdk=allow_dirty_sdk,
+        )
+    except AgentSdkError as exc:
         _emit(
             cli_ctx,
-            payload={"ok": False, "error": "worktree_missing", "worktree_path": str(worktree_path)},
-            text=f"Worktree missing: {worktree_path}",
+            payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
+            text=str(exc),
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
+    except AutofixWorktreeMissingError as exc:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "worktree_missing",
+                "worktree_path": str(exc.worktree_path),
+            },
+            text=str(exc),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    worktree_path = ensured.worktree_path
+    worktree_record = ensured.worktree_record
 
     capsule_artifacts = write_capsule_artifacts(
         run_dir=run_dir,
@@ -1513,46 +1554,36 @@ def autofix_agent(
         _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
         raise typer.Exit(code=ExitCode.RUN_FAILED)
 
-    # Ensure worktree exists (create if missing).
     resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
-    worktree_path = run_dir / "artifacts" / "autofix_sdk_worktree"
-    worktree_record_path = run_dir / "artifacts" / "autofix_worktree.json"
-    worktree_record: dict[str, Any] | None = None
-
-    if worktree_record_path.exists():
-        try:
-            worktree_record = json.loads(worktree_record_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            worktree_record = None
-
-    if not worktree_path.exists():
-        run_id = str(record.get("run_id") or run_dir.name).strip()
-        try:
-            created = create_sdk_worktree(
-                agent_sdk_path=resolved_sdk_path,
-                worktree_path=worktree_path,
-                profile_name=_autofix_profile_name_for_branch(record=record),
-                run_id=run_id,
-                allow_dirty=allow_dirty_sdk,
-                keep_worktree=True,
-            )
-        except AgentSdkError as exc:
-            _emit(
-                cli_ctx,
-                payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
-                text=str(exc),
-            )
-            raise typer.Exit(code=ExitCode.RUN_FAILED)
-        write_worktree_record(worktree_record_path, record=created)
-        worktree_record = created.as_json()
-
-    if not worktree_path.exists():
+    artifacts_dir = run_dir / "artifacts"
+    try:
+        ensured = _autofix_ensure_sdk_worktree(
+            artifacts_dir=artifacts_dir,
+            record=record,
+            resolved_sdk_path=resolved_sdk_path,
+            allow_dirty_sdk=allow_dirty_sdk,
+        )
+    except AgentSdkError as exc:
         _emit(
             cli_ctx,
-            payload={"ok": False, "error": "worktree_missing", "worktree_path": str(worktree_path)},
-            text=f"Worktree missing: {worktree_path}",
+            payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
+            text=str(exc),
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
+    except AutofixWorktreeMissingError as exc:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "worktree_missing",
+                "worktree_path": str(exc.worktree_path),
+            },
+            text=str(exc),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    worktree_path = ensured.worktree_path
+    worktree_record = ensured.worktree_record
 
     # Ensure capsule artifacts exist; use them as context for the OpenHands agent.
     capsule_artifacts = write_capsule_artifacts(
@@ -1608,29 +1639,30 @@ def _autofix_validate_impl(
 ) -> dict[str, Any]:
     artifacts_dir = run_dir / "artifacts"
 
-    # Ensure worktree exists (create if missing). Validation runs inside the worktree.
     worktree_path = artifacts_dir / "autofix_sdk_worktree"
-    worktree_record_path = artifacts_dir / "autofix_worktree.json"
+    try:
+        ensured = _autofix_ensure_sdk_worktree(
+            artifacts_dir=artifacts_dir,
+            record=record,
+            resolved_sdk_path=resolved_sdk_path,
+            allow_dirty_sdk=allow_dirty_sdk,
+        )
+    except AgentSdkError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "run_dir": str(run_dir),
+            "worktree_path": str(worktree_path),
+        }
+    except AutofixWorktreeMissingError as exc:
+        return {
+            "ok": False,
+            "error": "worktree_missing",
+            "run_dir": str(run_dir),
+            "worktree_path": str(exc.worktree_path),
+        }
 
-    if not worktree_path.exists():
-        run_id = str(record.get("run_id") or run_dir.name).strip()
-        try:
-            created = create_sdk_worktree(
-                agent_sdk_path=resolved_sdk_path,
-                worktree_path=worktree_path,
-                profile_name=_autofix_profile_name_for_branch(record=record),
-                run_id=run_id,
-                allow_dirty=allow_dirty_sdk,
-                keep_worktree=True,
-            )
-        except AgentSdkError as exc:
-            return {
-                "ok": False,
-                "error": str(exc),
-                "run_dir": str(run_dir),
-                "worktree_path": str(worktree_path),
-            }
-        write_worktree_record(worktree_record_path, record=created)
+    worktree_path = ensured.worktree_path
 
     repro_script_path = artifacts_dir / "autofix_repro.py"
     if not repro_script_path.exists():
@@ -1857,26 +1889,31 @@ def _autofix_pr_impl(
                     },
                 }
 
-    worktree_record_path = artifacts_dir / "autofix_worktree.json"
-    if not worktree_path.exists():
-        run_id = str(record.get("run_id") or run_dir.name).strip()
-        try:
-            created = create_sdk_worktree(
-                agent_sdk_path=resolved_sdk_path,
-                worktree_path=worktree_path,
-                profile_name=_autofix_profile_name_for_branch(record=record),
-                run_id=run_id,
-                allow_dirty=allow_dirty_sdk,
-                keep_worktree=True,
-            )
-        except AgentSdkError as exc:
-            _emit(
-                cli_ctx,
-                payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
-                text=str(exc),
-            )
-            raise typer.Exit(code=ExitCode.RUN_FAILED)
-        write_worktree_record(worktree_record_path, record=created)
+    try:
+        _autofix_ensure_sdk_worktree(
+            artifacts_dir=artifacts_dir,
+            record=record,
+            resolved_sdk_path=resolved_sdk_path,
+            allow_dirty_sdk=allow_dirty_sdk,
+        )
+    except AgentSdkError as exc:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
+            text=str(exc),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+    except AutofixWorktreeMissingError as exc:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "worktree_missing",
+                "worktree_path": str(exc.worktree_path),
+            },
+            text=str(exc),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
 
     validation_path = artifacts_dir / "autofix_validation.json"
     if not validation_path.exists():
