@@ -5,14 +5,15 @@
 - Docs home: https://platform.openai.com/docs
 - API reference: https://platform.openai.com/docs/api-reference
 - Chat Completions API: https://platform.openai.com/docs/api-reference/chat
+- Completions API (legacy): https://platform.openai.com/docs/api-reference/completions
 - Responses API: https://platform.openai.com/docs/api-reference/responses
 - Function/tool calling: https://platform.openai.com/docs/guides/function-calling
 - Streaming: https://platform.openai.com/docs/api-reference/streaming
 
 ## OpenAI-compat notes (vs “generic OpenAI-style”)
 
-- OpenAI has both **Chat Completions** and **Responses** APIs; tooling and SDKs may choose one. If a run fails in Stage A with endpoint-specific errors, confirm which endpoint the underlying SDK/provider is using.
-- Tool calling has multiple representations (legacy function calling vs newer tools in Responses). When going through LiteLLM and/or compatibility layers, validate that tool calls are being translated into the schema the SDK expects.
+- OpenAI has a legacy **Completions** API, a modern **Chat Completions** API, and a newer **Responses** API. Tooling and SDKs may choose one (or translate between them). If Stage A fails with endpoint-specific errors, confirm which endpoint the underlying SDK/provider is using.
+- Tool calling is expected to work through Chat Completions/Responses. When going through LiteLLM and/or compatibility layers, validate that tool calls are being translated into the schema the SDK expects.
 
 ## Common gotchas relevant to oh-llm
 

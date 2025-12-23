@@ -8,8 +8,8 @@ They focus on:
 - common Stage A vs Stage B failure modes in `oh-llm`
 
 Providers:
-- OpenAI: `docs/providers/openai.md`
 - Anthropic: `docs/providers/anthropic.md`
 - Gemini: `docs/providers/gemini.md`
-- OpenRouter: `docs/providers/openrouter.md`
 - Groq: `docs/providers/groq.md`
+- OpenAI: `docs/providers/openai.md`
+- OpenRouter: `docs/providers/openrouter.md`
