@@ -5,6 +5,7 @@
 - API reference: https://learn.microsoft.com/en-us/azure/ai-foundry/openai/reference?view=foundry-classic
 - Chat/completions concepts: https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/models
 - Auth: https://learn.microsoft.com/en-us/azure/ai-services/openai/reference#authentication
+- LiteLLM provider notes: https://docs.litellm.ai/docs/providers/azure
 
 ## OpenAI-compat notes
 
@@ -15,10 +16,12 @@
 
 ## Common gotchas relevant to oh-llm
 
-- **Base URL shape:** Azure commonly uses an endpoint like:
-  - `https://<resource>.openai.azure.com/`
-  - plus `/openai/deployments/<deployment>/...` paths.
-- **Model name:** often the *deployment* name, not the upstream model name.
+- **Required config knobs:** Azure usually requires all of:
+  - `AZURE_API_BASE` (example: `https://<resource>.openai.azure.com`)
+  - `AZURE_API_VERSION` (example: `2023-05-15` or newer; see docs)
+  - `AZURE_API_KEY` (or other auth methods)
+- **Base URL shape:** the base endpoint is typically `https://<resource>.openai.azure.com` (no `/openai/deployments/...` in the base URL).
+- **Model name:** often the *deployment* name, not the upstream model name (see LiteLLM docs for the expected `model=` format).
 - **If Stage A fails with 404/400:** it’s frequently a wrong deployment name or missing/incorrect `api-version`.
 
 ## Troubleshooting
@@ -29,4 +32,3 @@
   - Look for `api-version` mismatch.
 - Stage B fails:
   - Ensure the deployment supports the required feature set (tool calling or compatible schema).
-
