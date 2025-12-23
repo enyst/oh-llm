@@ -92,7 +92,7 @@ def test_autofix_refuses_credential_or_config_failures(
     assert payload["reason"] == "credential_or_config"
 
 
-def test_autofix_force_bypasses_gating_but_is_stub(
+def test_autofix_force_bypasses_gating_and_reaches_openhands_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -130,11 +130,12 @@ def test_autofix_force_bypasses_gating_but_is_stub(
             "--runs-dir",
             str(runs_dir),
             "--force",
+            "--openhands-bin",
+            "this-openhands-bin-does-not-exist",
             "--json",
         ],
     )
-    assert autofix.exit_code == ExitCode.INTERNAL_ERROR
+    assert autofix.exit_code == ExitCode.RUN_FAILED
     payload = json.loads(autofix.stdout)
     assert payload["ok"] is False
-    assert payload["error"] == "not_implemented"
-    assert payload["failure"]["classification"] == "credential_or_config"
+    assert "openhands" in payload["error"].lower()

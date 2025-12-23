@@ -38,7 +38,6 @@ def test_cli_help_smoke(args: list[str]) -> None:
 @pytest.mark.parametrize(
     "args",
     [
-        ["autofix", "start"],
         ["tui"],
     ],
 )

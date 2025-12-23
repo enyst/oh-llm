@@ -785,6 +785,349 @@ def runs_show(
         typer.echo(f"stage {key}: {summary.stage_statuses[key]}")
 
 
+def _autofix_profile_name_for_branch(*, record: dict[str, Any]) -> str:
+    profile = record.get("profile") if isinstance(record.get("profile"), dict) else {}
+    resolved = profile.get("resolved") if isinstance(profile.get("resolved"), dict) else {}
+    return (
+        str(profile.get("name") or "").strip()
+        or str(profile.get("model") or "").strip()
+        or str(resolved.get("model") or "").strip()
+        or "llm"
+    )
+
+
+def _autofix_failure(record: dict[str, Any]) -> dict[str, Any]:
+    failure = record.get("failure")
+    if isinstance(failure, dict):
+        return failure
+    stages = record.get("stages") if isinstance(record.get("stages"), dict) else {}
+    inferred = failure_from_stages(stages)
+    return inferred if isinstance(inferred, dict) else {}
+
+
+def _autofix_should_refuse(*, classification: str, force: bool) -> bool:
+    return classification == "credential_or_config" and not force
+
+
+def _autofix_load_worktree_record(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _autofix_pipeline(
+    *,
+    cli_ctx: CliContext,
+    run_dir: Path,
+    record: dict[str, Any],
+    agent_sdk_path: str | None,
+    allow_dirty_sdk: bool,
+    force: bool,
+    openhands_bin: str,
+    redact_env: list[str],
+    upstream_repo: str,
+    base: str,
+    fork_owner: str | None,
+    fork_url: str | None,
+    push_remote: str,
+    title: str | None,
+    draft: bool,
+) -> None:
+    failure = _autofix_failure(record)
+    classification_value = failure.get("classification")
+    classification = classification_value if isinstance(classification_value, str) else "unknown"
+
+    if _autofix_should_refuse(classification=classification, force=force):
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "refused",
+                "reason": "credential_or_config",
+                "run_dir": str(run_dir),
+                "failure": failure,
+            },
+            text=(
+                "Refusing to auto-fix a credential/config failure by default. "
+                "Fix credentials/config and re-run, or pass --force."
+            ),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    redaction_names = sorted(set([*extract_redact_env(record), *redact_env]))
+    redactor = redactor_from_env_vars(*redaction_names)
+
+    try:
+        resolved_openhands = resolve_openhands_bin(openhands_bin)
+    except OpenHandsError as exc:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
+            text=str(exc),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
+    artifacts_dir = run_dir / "artifacts"
+    worktree_path = artifacts_dir / "autofix_sdk_worktree"
+    worktree_record_path = artifacts_dir / "autofix_worktree.json"
+
+    worktree_record = _autofix_load_worktree_record(worktree_record_path)
+
+    if not worktree_path.exists():
+        run_id = str(record.get("run_id") or run_dir.name).strip()
+        try:
+            created = create_sdk_worktree(
+                agent_sdk_path=resolved_sdk_path,
+                worktree_path=worktree_path,
+                profile_name=_autofix_profile_name_for_branch(record=record),
+                run_id=run_id,
+                allow_dirty=allow_dirty_sdk,
+                keep_worktree=True,
+            )
+        except AgentSdkError as exc:
+            _emit(
+                cli_ctx,
+                payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
+                text=str(exc),
+            )
+            raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+        write_worktree_record(worktree_record_path, record=created)
+        worktree_record = created.as_json()
+
+    if not worktree_path.exists():
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "worktree_missing", "worktree_path": str(worktree_path)},
+            text=f"Worktree missing: {worktree_path}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    capsule_artifacts = write_capsule_artifacts(
+        run_dir=run_dir,
+        run_record=record,
+        redactor=redactor,
+    )
+
+    try:
+        openhands_artifacts = run_openhands_agent(
+            run_dir=run_dir,
+            worktree_path=worktree_path,
+            capsule_md_path=capsule_artifacts.capsule_md,
+            repro_script_path=capsule_artifacts.repro_script,
+            worktree_record=worktree_record,
+            run_record=record,
+            openhands_bin=resolved_openhands,
+            redactor=redactor,
+        )
+    except (OpenHandsError, AgentSdkError, OSError, subprocess.SubprocessError) as exc:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
+            text=str(exc),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    validation_payload = _autofix_validate_impl(
+        run_dir=run_dir,
+        record=record,
+        redactor=redactor,
+        resolved_sdk_path=resolved_sdk_path,
+        allow_dirty_sdk=allow_dirty_sdk,
+    )
+    if validation_payload["ok"] is not True:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": "validation_failed",
+                "run_dir": str(run_dir),
+                "worktree_path": str(worktree_path),
+                "validation": validation_payload,
+                "artifacts": {
+                    "capsule_json": str(capsule_artifacts.capsule_json),
+                    "capsule_md": str(capsule_artifacts.capsule_md),
+                    "repro_script": str(capsule_artifacts.repro_script),
+                    "openhands_context_md": str(openhands_artifacts.context_md),
+                    "openhands_transcript_log": str(openhands_artifacts.transcript_log),
+                    "openhands_diff_patch": str(openhands_artifacts.diff_patch),
+                    "openhands_run_record_json": str(openhands_artifacts.run_record_json),
+                },
+            },
+            text="Validation did not pass; refusing to open an upstream PR.",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    pr_payload = _autofix_pr_impl(
+        cli_ctx=cli_ctx,
+        run_dir=run_dir,
+        record=record,
+        redactor=redactor,
+        resolved_sdk_path=resolved_sdk_path,
+        allow_dirty_sdk=allow_dirty_sdk,
+        upstream_repo=upstream_repo,
+        base=base,
+        fork_owner=fork_owner,
+        fork_url=fork_url,
+        push_remote=push_remote,
+        title=title,
+        draft=draft,
+    )
+
+    _emit(
+        cli_ctx,
+        payload={
+            "ok": True,
+            "run_dir": str(run_dir),
+            "worktree_path": str(worktree_path),
+            "pr": pr_payload,
+            "artifacts": {
+                "capsule_json": str(capsule_artifacts.capsule_json),
+                "capsule_md": str(capsule_artifacts.capsule_md),
+                "repro_script": str(capsule_artifacts.repro_script),
+                "openhands_context_md": str(openhands_artifacts.context_md),
+                "openhands_transcript_log": str(openhands_artifacts.transcript_log),
+                "openhands_diff_patch": str(openhands_artifacts.diff_patch),
+                "openhands_run_record_json": str(openhands_artifacts.run_record_json),
+                "validation_json": str(artifacts_dir / "autofix_validation.json"),
+                "validation_md": str(artifacts_dir / "autofix_validation.md"),
+            },
+        },
+        text=f"Created upstream PR: {pr_payload.get('url')}",
+    )
+    raise typer.Exit(code=ExitCode.OK)
+
+
+@autofix_app.callback(invoke_without_command=True)
+def autofix(
+    ctx: typer.Context,
+    run: str | None = typer.Option(
+        None,
+        "--run",
+        help="Run id or run directory name/prefix to auto-fix.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    agent_sdk_path: str | None = typer.Option(
+        None,
+        "--agent-sdk-path",
+        help="Path to agent-sdk checkout (default: $OH_LLM_AGENT_SDK_PATH or ~/repos/agent-sdk).",
+    ),
+    allow_dirty_sdk: bool = typer.Option(
+        False,
+        "--allow-dirty-sdk",
+        help="Allow creating a worktree from a dirty agent-sdk checkout (unsafe).",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Override safety gating for credential/config failures.",
+    ),
+    openhands_bin: str = typer.Option(
+        "openhands",
+        "--openhands-bin",
+        help="OpenHands CLI executable (default: openhands on PATH).",
+    ),
+    upstream_repo: str = typer.Option(
+        "OpenHands/software-agent-sdk",
+        "--upstream-repo",
+        help="Upstream repo to open the PR against (owner/name).",
+    ),
+    base: str = typer.Option(
+        "main",
+        "--base",
+        help="Base branch in the upstream repo.",
+    ),
+    fork_owner: str | None = typer.Option(
+        None,
+        "--fork-owner",
+        help="Fork owner for the PR head (default: `gh api user --jq .login`).",
+    ),
+    fork_url: str | None = typer.Option(
+        None,
+        "--fork-url",
+        help=(
+            "Fork remote URL to push to (default: "
+            "https://github.com/<fork-owner>/software-agent-sdk.git)."
+        ),
+    ),
+    push_remote: str = typer.Option(
+        "fork",
+        "--push-remote",
+        help="Git remote name to push the worktree branch to (default: fork).",
+    ),
+    title: str | None = typer.Option(
+        None,
+        "--title",
+        help="Override PR title.",
+    ),
+    draft: bool = typer.Option(
+        False,
+        "--draft",
+        help="Create PR as a draft.",
+    ),
+    redact_env: list[str] = typer.Option(
+        [],
+        "--redact-env",
+        help="Environment variable name to redact from transcript/diff/PR artifacts (repeatable).",
+    ),
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    if not run:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+    try:
+        run_dir = resolve_run_dir(resolved_runs_dir, run)
+    except (RunNotFoundError, RunAmbiguousError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    record = read_run_record(run_dir)
+    if record is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json missing or corrupt", "run_dir": str(run_dir)},
+            text=f"run.json missing or corrupt in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    _autofix_pipeline(
+        cli_ctx=cli_ctx,
+        run_dir=run_dir,
+        record=record,
+        agent_sdk_path=agent_sdk_path,
+        allow_dirty_sdk=allow_dirty_sdk,
+        force=force,
+        openhands_bin=openhands_bin,
+        redact_env=redact_env,
+        upstream_repo=upstream_repo,
+        base=base,
+        fork_owner=fork_owner,
+        fork_url=fork_url,
+        push_remote=push_remote,
+        title=title,
+        draft=draft,
+    )
+
+
 @autofix_app.command("start")
 def autofix_start(
     ctx: typer.Context,
@@ -803,80 +1146,110 @@ def autofix_start(
         "--runs-dir",
         help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
     ),
+    agent_sdk_path: str | None = typer.Option(
+        None,
+        "--agent-sdk-path",
+        help="Path to agent-sdk checkout (default: $OH_LLM_AGENT_SDK_PATH or ~/repos/agent-sdk).",
+    ),
+    allow_dirty_sdk: bool = typer.Option(
+        False,
+        "--allow-dirty-sdk",
+        help="Allow creating a worktree from a dirty agent-sdk checkout (unsafe).",
+    ),
     force: bool = typer.Option(
         False,
         "--force",
         help="Override safety gating for credential/config failures.",
     ),
+    openhands_bin: str = typer.Option(
+        "openhands",
+        "--openhands-bin",
+        help="OpenHands CLI executable (default: openhands on PATH).",
+    ),
+    upstream_repo: str = typer.Option(
+        "OpenHands/software-agent-sdk",
+        "--upstream-repo",
+        help="Upstream repo to open the PR against (owner/name).",
+    ),
+    base: str = typer.Option(
+        "main",
+        "--base",
+        help="Base branch in the upstream repo.",
+    ),
+    fork_owner: str | None = typer.Option(
+        None,
+        "--fork-owner",
+        help="Fork owner for the PR head (default: `gh api user --jq .login`).",
+    ),
+    fork_url: str | None = typer.Option(
+        None,
+        "--fork-url",
+        help=(
+            "Fork remote URL to push to (default: "
+            "https://github.com/<fork-owner>/software-agent-sdk.git)."
+        ),
+    ),
+    push_remote: str = typer.Option(
+        "fork",
+        "--push-remote",
+        help="Git remote name to push the worktree branch to (default: fork).",
+    ),
+    title: str | None = typer.Option(
+        None,
+        "--title",
+        help="Override PR title.",
+    ),
+    draft: bool = typer.Option(
+        False,
+        "--draft",
+        help="Create PR as a draft.",
+    ),
+    redact_env: list[str] = typer.Option(
+        [],
+        "--redact-env",
+        help="Environment variable name to redact from transcript/diff/PR artifacts (repeatable).",
+    ),
 ) -> None:
-    """Start an auto-fix agent run (stub)."""
+    """Start an auto-fix run (alias for `oh-llm autofix <run>`)."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
 
-    if run:
-        resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
-        try:
-            run_dir = resolve_run_dir(resolved_runs_dir, run)
-        except (RunNotFoundError, RunAmbiguousError) as exc:
-            _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
-            raise typer.Exit(code=ExitCode.RUN_FAILED)
+    if not run:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
 
-        record = read_run_record(run_dir)
-        if record is None:
-            _emit(
-                cli_ctx,
-                payload={
-                    "ok": False,
-                    "error": "run.json missing or corrupt",
-                    "run_dir": str(run_dir),
-                },
-                text=f"run.json missing or corrupt in: {run_dir}",
-            )
-            raise typer.Exit(code=ExitCode.RUN_FAILED)
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+    try:
+        run_dir = resolve_run_dir(resolved_runs_dir, run)
+    except (RunNotFoundError, RunAmbiguousError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
 
-        failure = record.get("failure")
-        if not isinstance(failure, dict):
-            stages = record.get("stages") if isinstance(record.get("stages"), dict) else {}
-            failure = failure_from_stages(stages)
-
-        classification = (
-            failure.get("classification") if isinstance(failure, dict) else "unknown"
-        )
-
-        if classification == "credential_or_config" and not force:
-            _emit(
-                cli_ctx,
-                payload={
-                    "ok": False,
-                    "error": "refused",
-                    "reason": "credential_or_config",
-                    "run_dir": str(run_dir),
-                    "failure": failure,
-                },
-                text=(
-                    "Refusing to auto-fix a credential/config failure by default. "
-                    "Fix credentials/config and re-run, or pass --force."
-                ),
-            )
-            raise typer.Exit(code=ExitCode.RUN_FAILED)
-
+    record = read_run_record(run_dir)
+    if record is None:
         _emit(
             cli_ctx,
-            payload={
-                "ok": False,
-                "error": "not_implemented",
-                "run_dir": str(run_dir),
-                "failure": failure,
-            },
-            text="Auto-fix not implemented yet.",
+            payload={"ok": False, "error": "run.json missing or corrupt", "run_dir": str(run_dir)},
+            text=f"run.json missing or corrupt in: {run_dir}",
         )
-        raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
 
-    _emit(
-        cli_ctx,
-        payload={"ok": False, "error": "not_implemented"},
-        text="Auto-fix not implemented yet.",
+    _autofix_pipeline(
+        cli_ctx=cli_ctx,
+        run_dir=run_dir,
+        record=record,
+        agent_sdk_path=agent_sdk_path,
+        allow_dirty_sdk=allow_dirty_sdk,
+        force=force,
+        openhands_bin=openhands_bin,
+        redact_env=redact_env,
+        upstream_repo=upstream_repo,
+        base=base,
+        fork_owner=fork_owner,
+        fork_url=fork_url,
+        push_remote=push_remote,
+        title=title,
+        draft=draft,
     )
-    raise typer.Exit(code=ExitCode.INTERNAL_ERROR)
 
 
 @autofix_app.command("worktree")
@@ -1154,16 +1527,22 @@ def autofix_agent(
 
     if not worktree_path.exists():
         run_id = str(record.get("run_id") or run_dir.name).strip()
-        profile_obj = record.get("profile") if isinstance(record.get("profile"), dict) else {}
-        profile_name = str(profile_obj.get("name") or "unknown").strip()
-        created = create_sdk_worktree(
-            agent_sdk_path=resolved_sdk_path,
-            worktree_path=worktree_path,
-            profile_name=profile_name,
-            run_id=run_id,
-            allow_dirty=allow_dirty_sdk,
-            keep_worktree=True,
-        )
+        try:
+            created = create_sdk_worktree(
+                agent_sdk_path=resolved_sdk_path,
+                worktree_path=worktree_path,
+                profile_name=_autofix_profile_name_for_branch(record=record),
+                run_id=run_id,
+                allow_dirty=allow_dirty_sdk,
+                keep_worktree=True,
+            )
+        except AgentSdkError as exc:
+            _emit(
+                cli_ctx,
+                payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
+                text=str(exc),
+            )
+            raise typer.Exit(code=ExitCode.RUN_FAILED)
         write_worktree_record(worktree_record_path, record=created)
         worktree_record = created.as_json()
 
@@ -1219,82 +1598,40 @@ def autofix_agent(
     raise typer.Exit(code=ExitCode.OK)
 
 
-@autofix_app.command("validate")
-def autofix_validate(
-    ctx: typer.Context,
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Emit machine-readable JSON output for this command.",
-    ),
-    run: str = typer.Option(
-        ...,
-        "--run",
-        help="Run id or run directory name/prefix to validate.",
-    ),
-    runs_dir: str | None = typer.Option(
-        None,
-        "--runs-dir",
-        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
-    ),
-    agent_sdk_path: str | None = typer.Option(
-        None,
-        "--agent-sdk-path",
-        help="Path to agent-sdk checkout (default: $OH_LLM_AGENT_SDK_PATH or ~/repos/agent-sdk).",
-    ),
-    allow_dirty_sdk: bool = typer.Option(
-        False,
-        "--allow-dirty-sdk",
-        help="Allow creating a worktree from a dirty agent-sdk checkout (unsafe).",
-    ),
-    redact_env: list[str] = typer.Option(
-        [],
-        "--redact-env",
-        help="Environment variable name to redact from validation artifacts (repeatable).",
-    ),
-) -> None:
-    """Validate a fix in the agent-sdk worktree by running the repro harness."""
-    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
-    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
-
-    try:
-        run_dir = resolve_run_dir(resolved_runs_dir, run)
-    except (RunNotFoundError, RunAmbiguousError) as exc:
-        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
-        raise typer.Exit(code=ExitCode.RUN_FAILED)
-
-    record = read_run_record(run_dir)
-    if record is None:
-        _emit(
-            cli_ctx,
-            payload={"ok": False, "error": "run.json missing or corrupt", "run_dir": str(run_dir)},
-            text=f"run.json missing or corrupt in: {run_dir}",
-        )
-        raise typer.Exit(code=ExitCode.RUN_FAILED)
-
-    redaction_names = sorted(set([*extract_redact_env(record), *redact_env]))
-    redactor = redactor_from_env_vars(*redaction_names)
+def _autofix_validate_impl(
+    *,
+    run_dir: Path,
+    record: dict[str, Any],
+    redactor: Redactor,
+    resolved_sdk_path: Path,
+    allow_dirty_sdk: bool,
+) -> dict[str, Any]:
+    artifacts_dir = run_dir / "artifacts"
 
     # Ensure worktree exists (create if missing). Validation runs inside the worktree.
-    resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
-    worktree_path = run_dir / "artifacts" / "autofix_sdk_worktree"
-    worktree_record_path = run_dir / "artifacts" / "autofix_worktree.json"
+    worktree_path = artifacts_dir / "autofix_sdk_worktree"
+    worktree_record_path = artifacts_dir / "autofix_worktree.json"
 
     if not worktree_path.exists():
         run_id = str(record.get("run_id") or run_dir.name).strip()
-        profile_obj = record.get("profile") if isinstance(record.get("profile"), dict) else {}
-        profile_name = str(profile_obj.get("name") or "unknown").strip()
-        created = create_sdk_worktree(
-            agent_sdk_path=resolved_sdk_path,
-            worktree_path=worktree_path,
-            profile_name=profile_name,
-            run_id=run_id,
-            allow_dirty=allow_dirty_sdk,
-            keep_worktree=True,
-        )
+        try:
+            created = create_sdk_worktree(
+                agent_sdk_path=resolved_sdk_path,
+                worktree_path=worktree_path,
+                profile_name=_autofix_profile_name_for_branch(record=record),
+                run_id=run_id,
+                allow_dirty=allow_dirty_sdk,
+                keep_worktree=True,
+            )
+        except AgentSdkError as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "run_dir": str(run_dir),
+                "worktree_path": str(worktree_path),
+            }
         write_worktree_record(worktree_record_path, record=created)
 
-    artifacts_dir = run_dir / "artifacts"
     repro_script_path = artifacts_dir / "autofix_repro.py"
     if not repro_script_path.exists():
         repro_script_path = write_capsule_artifacts(
@@ -1304,12 +1641,13 @@ def autofix_validate(
         ).repro_script
 
     if not repro_script_path.exists():
-        _emit(
-            cli_ctx,
-            payload={"ok": False, "error": "missing_repro_script", "run_dir": str(run_dir)},
-            text=f"Missing repro script: {repro_script_path}",
-        )
-        raise typer.Exit(code=ExitCode.RUN_FAILED)
+        return {
+            "ok": False,
+            "error": "missing_repro_script",
+            "run_dir": str(run_dir),
+            "worktree_path": str(worktree_path),
+            "repro_script": str(repro_script_path),
+        }
 
     created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -1394,26 +1732,22 @@ def autofix_validate(
     except OSError:
         pass
 
-    _emit(
-        cli_ctx,
-        payload={
-            "ok": overall_ok,
-            "run_dir": str(run_dir),
-            "worktree_path": str(worktree_path),
-            "artifacts": {
-                "validation_json": str(summary_path),
-                "validation_md": str(summary_md_path),
-                "stage_a": str(stage_a_artifact),
-                "stage_b": str(stage_b_artifact),
-            },
+    return {
+        "ok": overall_ok,
+        "run_dir": str(run_dir),
+        "worktree_path": str(worktree_path),
+        "repro_script": str(repro_script_path),
+        "artifacts": {
+            "validation_json": str(summary_path),
+            "validation_md": str(summary_md_path),
+            "stage_a": str(stage_a_artifact),
+            "stage_b": str(stage_b_artifact),
         },
-        text=f"Wrote validation artifacts under: {artifacts_dir}",
-    )
-    raise typer.Exit(code=ExitCode.OK if overall_ok else ExitCode.RUN_FAILED)
+    }
 
 
-@autofix_app.command("pr")
-def autofix_pr(
+@autofix_app.command("validate")
+def autofix_validate(
     ctx: typer.Context,
     json_output: bool = typer.Option(
         False,
@@ -1423,7 +1757,7 @@ def autofix_pr(
     run: str = typer.Option(
         ...,
         "--run",
-        help="Run id or run directory name/prefix to open an upstream PR for.",
+        help="Run id or run directory name/prefix to validate.",
     ),
     runs_dir: str | None = typer.Option(
         None,
@@ -1440,51 +1774,13 @@ def autofix_pr(
         "--allow-dirty-sdk",
         help="Allow creating a worktree from a dirty agent-sdk checkout (unsafe).",
     ),
-    upstream_repo: str = typer.Option(
-        "OpenHands/software-agent-sdk",
-        "--upstream-repo",
-        help="Upstream repo to open the PR against (owner/name).",
-    ),
-    base: str = typer.Option(
-        "main",
-        "--base",
-        help="Base branch in the upstream repo.",
-    ),
-    fork_owner: str | None = typer.Option(
-        None,
-        "--fork-owner",
-        help="Fork owner for the PR head (default: `gh api user --jq .login`).",
-    ),
-    fork_url: str | None = typer.Option(
-        None,
-        "--fork-url",
-        help=(
-            "Fork remote URL to push to (default: "
-            "https://github.com/<fork-owner>/software-agent-sdk.git)."
-        ),
-    ),
-    push_remote: str = typer.Option(
-        "fork",
-        "--push-remote",
-        help="Git remote name to push the worktree branch to (default: fork).",
-    ),
-    title: str | None = typer.Option(
-        None,
-        "--title",
-        help="Override PR title.",
-    ),
-    draft: bool = typer.Option(
-        False,
-        "--draft",
-        help="Create PR as a draft.",
-    ),
     redact_env: list[str] = typer.Option(
         [],
         "--redact-env",
-        help="Environment variable name to redact from generated PR artifacts (repeatable).",
+        help="Environment variable name to redact from validation artifacts (repeatable).",
     ),
 ) -> None:
-    """Open an upstream PR for fixes made in the agent-sdk worktree."""
+    """Validate a fix in the agent-sdk worktree by running the repro harness."""
     cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
     resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
 
@@ -1507,26 +1803,79 @@ def autofix_pr(
     redactor = redactor_from_env_vars(*redaction_names)
 
     resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
-    artifacts_dir = run_dir / "artifacts"
-    worktree_path = artifacts_dir / "autofix_sdk_worktree"
-    worktree_record_path = artifacts_dir / "autofix_worktree.json"
+    payload = _autofix_validate_impl(
+        run_dir=run_dir,
+        record=record,
+        redactor=redactor,
+        resolved_sdk_path=resolved_sdk_path,
+        allow_dirty_sdk=allow_dirty_sdk,
+    )
 
+    _emit(
+        cli_ctx,
+        payload=payload,
+        text=f"Wrote validation artifacts under: {run_dir / 'artifacts'}",
+    )
+    raise typer.Exit(code=ExitCode.OK if payload["ok"] is True else ExitCode.RUN_FAILED)
+
+
+def _autofix_pr_impl(
+    *,
+    cli_ctx: CliContext,
+    run_dir: Path,
+    record: dict[str, Any],
+    redactor: Redactor,
+    resolved_sdk_path: Path,
+    allow_dirty_sdk: bool,
+    upstream_repo: str,
+    base: str,
+    fork_owner: str | None,
+    fork_url: str | None,
+    push_remote: str,
+    title: str | None,
+    draft: bool,
+) -> dict[str, Any]:
+    artifacts_dir = run_dir / "artifacts"
+    pr_record_path = artifacts_dir / "autofix_upstream_pr.json"
+    worktree_path = artifacts_dir / "autofix_sdk_worktree"
+    if pr_record_path.exists():
+        try:
+            existing = json.loads(pr_record_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = None
+        if isinstance(existing, dict):
+            pr_obj = existing.get("pr") if isinstance(existing.get("pr"), dict) else {}
+            pr_url = pr_obj.get("url")
+            if isinstance(pr_url, str) and pr_url.strip():
+                return {
+                    "url": pr_url.strip(),
+                    "existing": True,
+                    "worktree_path": str(worktree_path),
+                    "artifacts": {
+                        "pr_record_json": str(pr_record_path),
+                        "pr_body_md": str(artifacts_dir / "autofix_upstream_pr_body.md"),
+                    },
+                }
+
+    worktree_record_path = artifacts_dir / "autofix_worktree.json"
     if not worktree_path.exists():
         run_id = str(record.get("run_id") or run_dir.name).strip()
-        profile_obj = record.get("profile") if isinstance(record.get("profile"), dict) else {}
-        profile_name_for_branch = (
-            str(profile_obj.get("name") or "").strip()
-            or str(profile_obj.get("model") or "").strip()
-            or "llm"
-        )
-        created = create_sdk_worktree(
-            agent_sdk_path=resolved_sdk_path,
-            worktree_path=worktree_path,
-            profile_name=profile_name_for_branch,
-            run_id=run_id,
-            allow_dirty=allow_dirty_sdk,
-            keep_worktree=True,
-        )
+        try:
+            created = create_sdk_worktree(
+                agent_sdk_path=resolved_sdk_path,
+                worktree_path=worktree_path,
+                profile_name=_autofix_profile_name_for_branch(record=record),
+                run_id=run_id,
+                allow_dirty=allow_dirty_sdk,
+                keep_worktree=True,
+            )
+        except AgentSdkError as exc:
+            _emit(
+                cli_ctx,
+                payload={"ok": False, "error": str(exc), "run_dir": str(run_dir)},
+                text=str(exc),
+            )
+            raise typer.Exit(code=ExitCode.RUN_FAILED)
         write_worktree_record(worktree_record_path, record=created)
 
     validation_path = artifacts_dir / "autofix_validation.json"
@@ -1547,11 +1896,7 @@ def autofix_pr(
     except json.JSONDecodeError:
         _emit(
             cli_ctx,
-            payload={
-                "ok": False,
-                "error": "invalid_validation_json",
-                "path": str(validation_path),
-            },
+            payload={"ok": False, "error": "invalid_validation_json", "path": str(validation_path)},
             text=f"Invalid JSON: {validation_path}",
         )
         raise typer.Exit(code=ExitCode.RUN_FAILED)
@@ -1662,7 +2007,6 @@ def autofix_pr(
         raise typer.Exit(code=ExitCode.RUN_FAILED)
 
     created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    pr_record_path = artifacts_dir / "autofix_upstream_pr.json"
     write_validation_artifact(
         path=pr_record_path,
         payload={
@@ -1690,16 +2034,142 @@ def autofix_pr(
         redactor=redactor,
     )
 
+    return {
+        "url": pr_url,
+        "existing": False,
+        "worktree_path": str(worktree_path),
+        "upstream_repo": upstream_repo,
+        "base": base,
+        "head": f"{owner}:{branch}",
+        "title": pr_title,
+        "draft": draft,
+        "artifacts": {"pr_record_json": str(pr_record_path), "pr_body_md": str(body_path)},
+    }
+
+
+@autofix_app.command("pr")
+def autofix_pr(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+    run: str = typer.Option(
+        ...,
+        "--run",
+        help="Run id or run directory name/prefix to open an upstream PR for.",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    agent_sdk_path: str | None = typer.Option(
+        None,
+        "--agent-sdk-path",
+        help="Path to agent-sdk checkout (default: $OH_LLM_AGENT_SDK_PATH or ~/repos/agent-sdk).",
+    ),
+    allow_dirty_sdk: bool = typer.Option(
+        False,
+        "--allow-dirty-sdk",
+        help="Allow creating a worktree from a dirty agent-sdk checkout (unsafe).",
+    ),
+    upstream_repo: str = typer.Option(
+        "OpenHands/software-agent-sdk",
+        "--upstream-repo",
+        help="Upstream repo to open the PR against (owner/name).",
+    ),
+    base: str = typer.Option(
+        "main",
+        "--base",
+        help="Base branch in the upstream repo.",
+    ),
+    fork_owner: str | None = typer.Option(
+        None,
+        "--fork-owner",
+        help="Fork owner for the PR head (default: `gh api user --jq .login`).",
+    ),
+    fork_url: str | None = typer.Option(
+        None,
+        "--fork-url",
+        help=(
+            "Fork remote URL to push to (default: "
+            "https://github.com/<fork-owner>/software-agent-sdk.git)."
+        ),
+    ),
+    push_remote: str = typer.Option(
+        "fork",
+        "--push-remote",
+        help="Git remote name to push the worktree branch to (default: fork).",
+    ),
+    title: str | None = typer.Option(
+        None,
+        "--title",
+        help="Override PR title.",
+    ),
+    draft: bool = typer.Option(
+        False,
+        "--draft",
+        help="Create PR as a draft.",
+    ),
+    redact_env: list[str] = typer.Option(
+        [],
+        "--redact-env",
+        help="Environment variable name to redact from generated PR artifacts (repeatable).",
+    ),
+) -> None:
+    """Open an upstream PR for fixes made in the agent-sdk worktree."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+
+    try:
+        run_dir = resolve_run_dir(resolved_runs_dir, run)
+    except (RunNotFoundError, RunAmbiguousError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    record = read_run_record(run_dir)
+    if record is None:
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json missing or corrupt", "run_dir": str(run_dir)},
+            text=f"run.json missing or corrupt in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    redaction_names = sorted(set([*extract_redact_env(record), *redact_env]))
+    redactor = redactor_from_env_vars(*redaction_names)
+
+    resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
+    pr_payload = _autofix_pr_impl(
+        cli_ctx=cli_ctx,
+        run_dir=run_dir,
+        record=record,
+        redactor=redactor,
+        resolved_sdk_path=resolved_sdk_path,
+        allow_dirty_sdk=allow_dirty_sdk,
+        upstream_repo=upstream_repo,
+        base=base,
+        fork_owner=fork_owner,
+        fork_url=fork_url,
+        push_remote=push_remote,
+        title=title,
+        draft=draft,
+    )
+
+    artifacts_value = pr_payload.get("artifacts")
+    pr_artifacts = artifacts_value if isinstance(artifacts_value, dict) else {}
     _emit(
         cli_ctx,
         payload={
             "ok": True,
             "run_dir": str(run_dir),
-            "worktree_path": str(worktree_path),
-            "pr_url": pr_url,
-            "artifacts": {"pr_record_json": str(pr_record_path), "pr_body_md": str(body_path)},
+            "worktree_path": pr_payload.get("worktree_path"),
+            "pr_url": pr_payload.get("url"),
+            "artifacts": pr_artifacts,
         },
-        text=f"Created upstream PR: {pr_url}",
+        text=f"Created upstream PR: {pr_payload.get('url')}",
     )
     raise typer.Exit(code=ExitCode.OK)
 
