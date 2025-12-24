@@ -33,6 +33,10 @@ against a specific `agent-sdk` worktree, pass `--agent-sdk-path <path>`.
 By default, the script uses an isolated temporary `HOME` so it won’t modify your real
 `~/.openhands/llm-profiles/` store. Use `--use-user-home` (or `--home-dir <path>`) to opt out.
 
+To run against common providers with preset env var checks, use:
+
+- `uv run python scripts/provider_smoke.py --help`
+
 ## Safety
 
 - Never commit or print API keys.

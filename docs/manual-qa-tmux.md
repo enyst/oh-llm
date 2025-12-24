@@ -48,6 +48,7 @@ Run these commands in the CLI pane:
 - `uv run python scripts/openai_sdk_smoke.py --mock --stage-b --json`
   - Tip: use `--agent-sdk-path ~/repos/agent-sdk` to point at a specific SDK checkout/worktree.
   - Tip: `--use-user-home` uses your real `~/.openhands` profiles (default is isolated `HOME`).
+- `uv run python scripts/provider_smoke.py --provider openai --model openai/gpt-4o-mini --mock --stage-b --json`
 
 Expected:
 - CLI commands exit successfully where applicable.
