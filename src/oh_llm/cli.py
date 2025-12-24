@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tarfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import IntEnum
+from gzip import GzipFile
 from pathlib import Path
 from typing import Any
 
@@ -784,6 +786,81 @@ def runs_show(
     typer.echo(f"profile: {summary.profile_name or '(unknown)'}")
     for key in sorted(summary.stage_statuses.keys()):
         typer.echo(f"stage {key}: {summary.stage_statuses[key]}")
+
+
+def _export_run_dir_tar_gz(*, run_dir: Path, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as raw:
+        with GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
+            with tarfile.open(fileobj=gz, mode="w") as tar:
+                tar.add(run_dir, arcname=run_dir.name)
+    try:
+        output_path.chmod(0o600)
+    except OSError:
+        pass
+
+
+@runs_app.command("export")
+def runs_export(
+    ctx: typer.Context,
+    run: str = typer.Argument(..., help="Run id or run directory name/prefix to export."),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for this command.",
+    ),
+    runs_dir: str | None = typer.Option(
+        None,
+        "--runs-dir",
+        help="Override runs directory (default: $OH_LLM_RUNS_DIR or ~/.oh-llm/runs).",
+    ),
+    output: str | None = typer.Option(
+        None,
+        "--output",
+        help="Output archive path (default: <runs_dir>/<run_dir.name>.tar.gz).",
+    ),
+) -> None:
+    """Export a run directory to a tar.gz archive for sharing."""
+    cli_ctx = _ctx_with_json_override(ctx, json_output=json_output)
+    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
+
+    try:
+        run_dir = resolve_run_dir(resolved_runs_dir, run)
+    except (RunNotFoundError, RunAmbiguousError) as exc:
+        _emit(cli_ctx, payload={"ok": False, "error": str(exc)}, text=str(exc))
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    if not (run_dir / "run.json").exists():
+        _emit(
+            cli_ctx,
+            payload={"ok": False, "error": "run.json missing", "run_dir": str(run_dir)},
+            text=f"run.json missing in: {run_dir}",
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    output_path = (
+        Path(output).expanduser() if output else (run_dir.parent / f"{run_dir.name}.tar.gz")
+    )
+    try:
+        _export_run_dir_tar_gz(run_dir=run_dir, output_path=output_path)
+    except (OSError, tarfile.TarError) as exc:
+        _emit(
+            cli_ctx,
+            payload={
+                "ok": False,
+                "error": str(exc),
+                "run_dir": str(run_dir),
+                "export_path": str(output_path),
+            },
+            text=str(exc),
+        )
+        raise typer.Exit(code=ExitCode.RUN_FAILED)
+
+    _emit(
+        cli_ctx,
+        payload={"ok": True, "run_dir": str(run_dir), "export_path": str(output_path)},
+        text=str(output_path),
+    )
 
 
 def _autofix_profile_name_for_branch(*, record: dict[str, Any]) -> str:
