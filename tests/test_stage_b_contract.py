@@ -43,6 +43,12 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _write_fake_agent_sdk(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "pyproject.toml").write_text("[project]\nname = \"agent-sdk\"\n", encoding="utf-8")
+    (path / "src" / "openhands").mkdir(parents=True, exist_ok=True)
+
+
 def test_stage_b_persists_probe_result_and_redacts_secrets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -52,6 +58,8 @@ def test_stage_b_persists_probe_result_and_redacts_secrets(
 
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
+    sdk_dir = tmp_path / "agent-sdk"
+    _write_fake_agent_sdk(sdk_dir)
 
     raw = {
         "ok": True,
@@ -72,7 +80,7 @@ def test_stage_b_persists_probe_result_and_redacts_secrets(
 
     redactor = redactor_from_env_vars(secret_env)
     outcome = run_stage_b(
-        agent_sdk_path=tmp_path / "agent-sdk",
+        agent_sdk_path=sdk_dir,
         artifacts_dir=artifacts_dir,
         model="demo-model",
         base_url="https://example.invalid/v1",
@@ -104,6 +112,8 @@ def test_stage_b_treats_nonzero_exit_as_failure_when_probe_claims_ok(
 ) -> None:
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
+    sdk_dir = tmp_path / "agent-sdk"
+    _write_fake_agent_sdk(sdk_dir)
 
     raw = {
         "ok": True,
@@ -120,7 +130,7 @@ def test_stage_b_treats_nonzero_exit_as_failure_when_probe_claims_ok(
     )
 
     outcome = run_stage_b(
-        agent_sdk_path=tmp_path / "agent-sdk",
+        agent_sdk_path=sdk_dir,
         artifacts_dir=artifacts_dir,
         model="demo-model",
         base_url=None,
@@ -145,6 +155,8 @@ def test_stage_b_handles_non_json_probe_stdout_and_redacts_stdout(
 
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
+    sdk_dir = tmp_path / "agent-sdk"
+    _write_fake_agent_sdk(sdk_dir)
 
     stdout = f"not json: {secret_value}\n"
     monkeypatch.setattr(
@@ -154,7 +166,7 @@ def test_stage_b_handles_non_json_probe_stdout_and_redacts_stdout(
 
     redactor = redactor_from_env_vars(secret_env)
     outcome = run_stage_b(
-        agent_sdk_path=tmp_path / "agent-sdk",
+        agent_sdk_path=sdk_dir,
         artifacts_dir=artifacts_dir,
         model="demo-model",
         base_url=None,

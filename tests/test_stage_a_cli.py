@@ -83,3 +83,86 @@ def test_run_stage_a_fails_fast_when_api_key_env_missing(
     assert record["stages"]["A"]["error"]["classification"] == "credential_or_config"
     assert record["failure"]["classification"] == "credential_or_config"
     assert payload["failure"]["classification"] == "credential_or_config"
+
+
+def test_run_stage_a_fails_fast_when_agent_sdk_path_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TEST_API_KEY", "secret")
+
+    runner = CliRunner()
+    add_profile = runner.invoke(
+        app,
+        [
+            "profile",
+            "add",
+            "demo",
+            "--model",
+            "gpt-5-mini",
+            "--api-key-env",
+            "TEST_API_KEY",
+        ],
+    )
+    assert add_profile.exit_code == ExitCode.OK
+
+    invalid_sdk = tmp_path / "missing-agent-sdk"
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--profile",
+            "demo",
+            "--agent-sdk-path",
+            str(invalid_sdk),
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ],
+    )
+    assert result.exit_code == ExitCode.RUN_FAILED
+
+    payload = json.loads(result.stdout)
+    run_dir = Path(payload["run_dir"])
+    record = read_run_json(run_dir / "run.json")
+
+    assert record["agent_sdk"]["path"] == str(invalid_sdk)
+    assert record["stages"]["A"]["status"] == "fail"
+    assert record["stages"]["A"]["error"]["classification"] == "credential_or_config"
+    assert "does not exist" in record["stages"]["A"]["error"]["message"]
+
+
+def test_run_stage_a_sdk_path_alias_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TEST_API_KEY", "secret")
+
+    runner = CliRunner()
+    add_profile = runner.invoke(
+        app,
+        [
+            "profile",
+            "add",
+            "demo",
+            "--model",
+            "gpt-5-mini",
+            "--api-key-env",
+            "TEST_API_KEY",
+        ],
+    )
+    assert add_profile.exit_code == ExitCode.OK
+
+    invalid_sdk = tmp_path / "missing-agent-sdk"
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--profile",
+            "demo",
+            "--sdk-path",
+            str(invalid_sdk),
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ],
+    )
+    assert result.exit_code == ExitCode.RUN_FAILED

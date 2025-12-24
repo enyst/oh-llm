@@ -132,3 +132,30 @@ def uv_run_python(
         text=True,
         check=False,
     )
+
+
+def looks_like_agent_sdk_checkout(path: Path) -> bool:
+    """Best-effort heuristic for whether a path resembles an agent-sdk checkout/worktree."""
+    if not path.exists() or not path.is_dir():
+        return False
+    if not (path / "pyproject.toml").exists():
+        return False
+    if (path / "src" / "openhands").exists():
+        return True
+    if (path / "openhands").exists():
+        return True
+    return False
+
+
+def agent_sdk_path_problem(path: Path) -> str | None:
+    """Return a human-friendly problem string if the agent-sdk path is invalid."""
+    if not path.exists():
+        return f"agent-sdk path does not exist: {path}"
+    if not path.is_dir():
+        return f"agent-sdk path is not a directory: {path}"
+    if not looks_like_agent_sdk_checkout(path):
+        return (
+            "agent-sdk path does not look like a checkout/worktree "
+            f"(missing pyproject.toml and/or openhands package): {path}"
+        )
+    return None
