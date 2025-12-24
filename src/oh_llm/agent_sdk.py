@@ -68,6 +68,18 @@ def get_git_head_sha(repo_path: Path) -> str:
     return proc.stdout.strip()
 
 
+def is_git_repo(repo_path: Path) -> bool:
+    if not repo_path.exists():
+        return False
+    proc = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
 def is_git_dirty(repo_path: Path) -> bool:
     proc = _run_checked(["git", "-C", str(repo_path), "status", "--porcelain=v1"])
     return bool(proc.stdout.strip())
