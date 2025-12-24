@@ -195,7 +195,7 @@ def main() -> None:
     home_dir.mkdir(parents=True, exist_ok=True)
     os.environ["HOME"] = str(home_dir)
 
-    mock_enabled = bool(args.mock) or bool(os.environ.get("OH_LLM_MOCK"))
+    mock_enabled = args.mock or bool(os.environ.get("OH_LLM_MOCK"))
     model = (args.model or "").strip()
     api_key_env = (args.api_key_env or "").strip()
 
@@ -214,15 +214,15 @@ def main() -> None:
     profile = upsert_profile(
         profile_id=profile_id,
         model=model,
-        base_url=(str(args.base_url).strip() if args.base_url else None),
+        base_url=(args.base_url.strip() if args.base_url else None),
         api_key_env=api_key_env,
-        overwrite=bool(args.overwrite_profile),
+        overwrite=args.overwrite_profile,
     )
 
     env = dict(os.environ)
     env["HOME"] = str(home_dir)
     if args.agent_sdk_path:
-        env["OH_LLM_AGENT_SDK_PATH"] = str(Path(str(args.agent_sdk_path)).expanduser())
+        env["OH_LLM_AGENT_SDK_PATH"] = str(Path(args.agent_sdk_path).expanduser())
     cwd = _repo_root()
 
     run_args = [
@@ -232,18 +232,18 @@ def main() -> None:
         "--json",
     ]
     if args.runs_dir:
-        run_args.extend(["--runs-dir", str(args.runs_dir)])
+        run_args.extend(["--runs-dir", args.runs_dir])
     if mock_enabled:
         run_args.append("--mock")
-        run_args.extend(["--mock-stage-b-mode", str(args.mock_stage_b_mode)])
+        run_args.extend(["--mock-stage-b-mode", args.mock_stage_b_mode])
     if args.stage_b:
         run_args.append("--stage-b")
-        run_args.extend(["--stage-b-terminal-type", str(args.stage_b_terminal_type)])
-        run_args.extend(["--stage-b-max-iterations", str(int(args.stage_b_max_iterations))])
+        run_args.extend(["--stage-b-terminal-type", args.stage_b_terminal_type])
+        run_args.extend(["--stage-b-max-iterations", str(args.stage_b_max_iterations)])
 
     exit_code, payload = _run_oh_llm_json(args=run_args, cwd=cwd, env=env)
     run_dir_raw = payload.get("run_dir")
-    run_dir = Path(str(run_dir_raw)) if run_dir_raw else None
+    run_dir = Path(run_dir_raw) if run_dir_raw else None
 
     run_record: dict[str, Any] = {}
     if run_dir and run_dir.exists():
