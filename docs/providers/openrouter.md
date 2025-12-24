@@ -5,17 +5,19 @@
 - Docs home: https://openrouter.ai/docs
 - API reference (includes OpenAI-compatible endpoints): https://openrouter.ai/docs/api/reference
 - Streaming reference: https://openrouter.ai/docs/api/reference/streaming
+- LiteLLM provider notes: https://docs.litellm.ai/docs/providers/openrouter
 
-## OpenAI-compat notes
+## API shape + compatibility notes
 
-- OpenRouter is explicitly OpenAI-compatible at the HTTP layer, but model naming and routing are provider-specific.
-- Some features depend on the underlying model/provider chosen via OpenRouter.
+- OpenRouter is explicitly OpenAI-compatible at the HTTP layer, but model naming/routing are provider-specific.
+- Some features (especially tool calling) depend on the underlying model/provider behind a given OpenRouter model id.
 
 ## Common gotchas relevant to oh-llm
 
 - **Base URL:** commonly `https://openrouter.ai/api/v1` (confirm in docs).
 - **Model ids:** OpenRouter model ids often look like `provider/model` (varies).
-- **Headers:** OpenRouter supports optional headers for ranking/attribution; keep them out of artifacts.
+- **Optional headers:** OpenRouter supports extra headers (attribution / routing); avoid including them in logs/artifacts unless needed for debugging.
+- **Provider-specific quirks:** if a model fails tool calling on OpenRouter, confirm whether the underlying provider supports the needed features.
 
 ## Troubleshooting
 
