@@ -22,6 +22,11 @@ def _ensure_oh_llm_importable() -> None:
 
 _ensure_oh_llm_importable()
 from oh_llm.failures import classify_text  # noqa: E402
+from oh_llm.prompts import stage_b_user_prompt  # noqa: E402
+
+
+def _prompt() -> str:
+    return stage_b_user_prompt()
 
 
 def _success_payload(
@@ -165,8 +170,7 @@ def main() -> None:
             visualizer=None,
         )
 
-        prompt = "Run `echo TOOL_OK` in the terminal and then reply with TOOL_OK."
-        conversation.send_message(prompt)
+        conversation.send_message(_prompt())
         conversation.run()
 
         tool_invoked = False
