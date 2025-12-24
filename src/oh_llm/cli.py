@@ -176,6 +176,12 @@ def run(
         "--profile",
         help="Profile name/identifier (for run naming).",
     ),
+    agent_sdk_path: str | None = typer.Option(
+        None,
+        "--agent-sdk-path",
+        "--sdk-path",
+        help="Path to agent-sdk checkout (default: $OH_LLM_AGENT_SDK_PATH or ~/repos/agent-sdk).",
+    ),
     runs_dir: str | None = typer.Option(
         None,
         "--runs-dir",
@@ -218,8 +224,8 @@ def run(
     resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir else resolve_runs_dir()
     mock_enabled = bool(mock) or bool(os.environ.get("OH_LLM_MOCK"))
 
-    agent_sdk_path = resolve_agent_sdk_path()
-    sdk_info = collect_agent_sdk_info(agent_sdk_path)
+    resolved_sdk_path = resolve_agent_sdk_path(Path(agent_sdk_path) if agent_sdk_path else None)
+    sdk_info = collect_agent_sdk_info(resolved_sdk_path)
 
     run_paths = create_run_dir(runs_dir=resolved_runs_dir, profile_name=profile)
     stages = default_stage_template()
@@ -419,7 +425,7 @@ def run(
         )
     else:
         outcome = run_stage_a(
-            agent_sdk_path=agent_sdk_path,
+            agent_sdk_path=resolved_sdk_path,
             artifacts_dir=run_paths.artifacts_dir,
             model=profile_record.model,
             base_url=profile_record.base_url,
@@ -504,7 +510,7 @@ def run(
         )
     else:
         outcome_b = run_stage_b(
-            agent_sdk_path=agent_sdk_path,
+            agent_sdk_path=resolved_sdk_path,
             artifacts_dir=run_paths.artifacts_dir,
             model=profile_record.model,
             base_url=profile_record.base_url,

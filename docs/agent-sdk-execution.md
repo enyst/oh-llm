@@ -15,6 +15,7 @@ To run the SDK reliably, `oh-llm` treats the SDK checkout (`~/repos/agent-sdk` b
 ## Configuration
 
 - SDK path: `OH_LLM_AGENT_SDK_PATH` (defaults to `~/repos/agent-sdk`)
+- CLI overrides: `oh-llm run --agent-sdk-path <path>` (alias: `--sdk-path`) and similar flags on `oh-llm autofix ...`
 - `uv` must be on `PATH`.
 
 ## CLI helpers

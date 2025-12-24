@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from oh_llm.agent_sdk import AgentSdkError, uv_run_python
+from oh_llm.agent_sdk import AgentSdkError, agent_sdk_path_problem, uv_run_python
 from oh_llm.redaction import Redactor
 
 
@@ -49,6 +49,26 @@ def run_stage_b(
     terminal_type: str | None,
     redactor: Redactor,
 ) -> StageBOutcome:
+    problem = agent_sdk_path_problem(agent_sdk_path)
+    if problem:
+        error = {
+            "type": "ConfigError",
+            "message": problem,
+            "classification": "credential_or_config",
+            "hint": "Pass --agent-sdk-path <path> or set $OH_LLM_AGENT_SDK_PATH.",
+        }
+        return StageBOutcome(
+            ok=False,
+            duration_ms=0,
+            tool_invoked=False,
+            tool_observed=False,
+            tool_command_preview=None,
+            tool_output_preview=None,
+            final_answer_preview=None,
+            error=error,
+            raw={"ok": False, "error": error},
+        )
+
     config_path = artifacts_dir / "stage_b_config.json"
     workspace_dir = artifacts_dir / "stage_b_workspace"
     workspace_dir.mkdir(parents=True, exist_ok=True)
