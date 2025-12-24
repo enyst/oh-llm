@@ -47,6 +47,7 @@ Run these commands in the CLI pane:
 - `uv run oh-llm run --profile demo --json`
 - `uv run python scripts/openai_sdk_smoke.py --mock --stage-b --json`
   - Tip: use `--agent-sdk-path ~/repos/agent-sdk` to point at a specific SDK checkout/worktree.
+  - Tip: `--use-user-home` uses your real `~/.openhands` profiles (default is isolated `HOME`).
 
 Expected:
 - CLI commands exit successfully where applicable.

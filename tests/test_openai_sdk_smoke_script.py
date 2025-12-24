@@ -36,11 +36,11 @@ def test_openai_sdk_smoke_script_mock_offline(tmp_path: Path) -> None:
         return
 
     env = dict(os.environ)
-    env["HOME"] = str(tmp_path)
     env["OH_LLM_AGENT_SDK_PATH"] = str(tmp_path / "agent-sdk")
     (tmp_path / "agent-sdk").mkdir(parents=True, exist_ok=True)
 
     runs_dir = tmp_path / "runs"
+    home_dir = tmp_path / "home"
     proc = subprocess.run(
         [
             "uv",
@@ -49,6 +49,8 @@ def test_openai_sdk_smoke_script_mock_offline(tmp_path: Path) -> None:
             "scripts/openai_sdk_smoke.py",
             "--mock",
             "--stage-b",
+            "--home-dir",
+            str(home_dir),
             "--runs-dir",
             str(runs_dir),
             "--json",
@@ -65,4 +67,3 @@ def test_openai_sdk_smoke_script_mock_offline(tmp_path: Path) -> None:
     assert payload["run_dir"]
     assert payload["stages"]["A"]["status"] == "pass"
     assert payload["stages"]["B"]["status"] == "pass"
-

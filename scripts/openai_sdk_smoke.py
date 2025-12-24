@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -101,6 +102,19 @@ def main() -> None:
             "for Stage A, optionally Stage B."
         )
     )
+    parser.add_argument(
+        "--home-dir",
+        default=None,
+        help=(
+            "Directory to use as $HOME for this run (isolates ~/.openhands and ~/.oh-llm). "
+            "Defaults to a new temp directory."
+        ),
+    )
+    parser.add_argument(
+        "--use-user-home",
+        action="store_true",
+        help="Use the real user home directory (opt out of isolation).",
+    )
     parser.add_argument("--model", help="LiteLLM model string (e.g. openai/gpt-4o-mini).")
     parser.add_argument(
         "--base-url",
@@ -168,6 +182,19 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.use_user_home and args.home_dir:
+        raise SystemExit("Cannot combine --use-user-home and --home-dir.")
+
+    if args.use_user_home:
+        home_dir = Path.home()
+    elif args.home_dir:
+        home_dir = Path(str(args.home_dir)).expanduser()
+    else:
+        home_dir = Path(tempfile.mkdtemp(prefix="oh-llm-smoke-home."))
+
+    home_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["HOME"] = str(home_dir)
+
     mock_enabled = bool(args.mock) or bool(os.environ.get("OH_LLM_MOCK"))
     model = (args.model or "").strip()
     api_key_env = (args.api_key_env or "").strip()
@@ -193,6 +220,7 @@ def main() -> None:
     )
 
     env = dict(os.environ)
+    env["HOME"] = str(home_dir)
     if args.agent_sdk_path:
         env["OH_LLM_AGENT_SDK_PATH"] = str(Path(str(args.agent_sdk_path)).expanduser())
     cwd = _repo_root()
@@ -231,6 +259,7 @@ def main() -> None:
             json.dumps(
                 {
                     "ok": ok,
+                    "home_dir": str(home_dir),
                     "profile_id": profile.profile_id,
                     "model": profile.model,
                     "base_url": profile.base_url,
@@ -244,6 +273,7 @@ def main() -> None:
             )
         )
     else:
+        print(f"HOME (isolated): {home_dir}\n")
         if run_dir:
             print(_summarize_human(profile=profile, run_dir=run_dir, run=run_record or payload))
         else:
