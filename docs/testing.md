@@ -21,6 +21,15 @@ Unmarked tests are treated as unit-by-default and will run in CI (CI only exclud
 - E2E (opt-in, local):
   - `uv run pytest -m e2e`
 
+## Manual smoke checks (opt-in)
+
+When validating a new model/provider (or a new `agent-sdk` release), use the standalone smoke script:
+
+- `uv run python scripts/openai_sdk_smoke.py --help`
+
+It creates an on-disk SDK profile (no secrets persisted) and runs Stage A, optionally Stage B. To test
+against a specific `agent-sdk` worktree, pass `--agent-sdk-path <path>`.
+
 ## Safety
 
 - Never commit or print API keys.
