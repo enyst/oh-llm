@@ -58,7 +58,8 @@ Reviews (do not merge without reviewer approval):
 - **Required**: request review via **Agent Mail** (Agent Reviewer).
   - Send the reviewer the PR link/number + context; set `ack_required=true`.
   - Keep review discussion in one thread (`thread_id=<beads-id>` or `thread_id=pr-<number>`).
-  - Do not merge until the reviewer has explicitly ACK’d the **current diff** in Mail. If scope changes materially (force-push, significant new commits), request a fresh ACK.
+  - Do not merge until the reviewer has explicitly ACK’d the **current head SHA** in Mail (e.g. “LGTM to merge head `<sha>`”).
+  - If you push **any** new commit(s) after a reviewer’s LGTM (even “small” nits/docs/test tweaks), you must notify the reviewer and request a fresh LGTM for the new head SHA before merging.
   - If branch protection requires a GitHub approval, the reviewer should also approve on GitHub, but detailed review notes live in Mail.
 - **Optional (good-to-have)**: GitHub AI reviewers (e.g., Gemini / CodeRabbit).
   - Treat them as extra eyes; do not substitute them for the reviewer’s Mail approval.
