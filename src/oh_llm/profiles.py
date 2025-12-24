@@ -141,6 +141,145 @@ def write_profile_metadata(
     return path
 
 
+def update_profile(
+    *,
+    profile_id: str,
+    model: str | None,
+    base_url: str | None,
+    clear_base_url: bool,
+    api_key_env: str | None,
+) -> ProfileRecord:
+    """Update an existing profile's non-secret fields.
+
+    Note: this never stores secret values; `api_key_env` is only the env var name.
+    """
+    safe_id = _ensure_safe_profile_id(profile_id)
+
+    sdk_path = get_openhands_profile_path(safe_id)
+    meta_path = get_oh_llm_metadata_path(safe_id)
+
+    sdk_exists = sdk_path.exists()
+    meta_exists = meta_path.exists()
+
+    sdk_payload: dict[str, Any] = {}
+    if sdk_exists:
+        sdk_payload = load_openhands_profile(safe_id) or {}
+
+    meta_payload: dict[str, Any] = {}
+    if meta_exists:
+        meta_payload = load_profile_metadata(safe_id) or {}
+
+    if not sdk_payload and not meta_payload:
+        raise FileNotFoundError(f"Profile not found: {safe_id}")
+
+    sdk_changed = False
+    meta_changed = False
+
+    if model is not None:
+        sdk_payload["profile_id"] = safe_id
+        sdk_payload["model"] = str(model)
+        sdk_changed = True
+
+    if clear_base_url:
+        if not sdk_payload and not sdk_exists and model is None:
+            raise ValueError("Cannot clear base_url without an existing SDK profile or --model.")
+        if "model" not in sdk_payload and model is None:
+            raise ValueError("SDK profile is missing 'model'; re-add or edit with --model.")
+        sdk_payload.pop("base_url", None)
+        sdk_changed = True
+    elif base_url is not None:
+        if not sdk_payload and not sdk_exists and model is None:
+            raise ValueError("Cannot update base_url without an existing SDK profile or --model.")
+        if "model" not in sdk_payload and model is None:
+            raise ValueError("SDK profile is missing 'model'; re-add or edit with --model.")
+
+        normalized = str(base_url).strip()
+        if normalized:
+            sdk_payload["base_url"] = normalized
+        else:
+            sdk_payload.pop("base_url", None)
+        sdk_changed = True
+
+    if api_key_env is not None:
+        safe_env = _ensure_safe_env_var_name(api_key_env)
+        meta_payload.setdefault("schema_version", 1)
+        meta_payload["profile_id"] = safe_id
+        meta_payload["api_key_env"] = safe_env
+        meta_payload.setdefault("created_at", _utc_now_iso())
+        meta_payload["updated_at"] = _utc_now_iso()
+        meta_changed = True
+
+    if not sdk_changed and not meta_changed:
+        existing = get_profile(safe_id)
+        if existing is None:
+            raise FileNotFoundError(f"Profile not found: {safe_id}")
+        return existing
+
+    if sdk_changed:
+        if not sdk_payload:
+            raise ValueError(
+                "Internal error: attempted to update SDK profile, but payload is empty."
+            )
+        sdk_payload.setdefault("profile_id", safe_id)
+        sdk_payload.pop("api_key", None)
+        if "model" not in sdk_payload:
+            raise ValueError("SDK profile is missing 'model'; re-add or edit with --model.")
+
+        sdk_path.parent.mkdir(parents=True, exist_ok=True)
+        sdk_path.write_text(
+            json.dumps(sdk_payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            sdk_path.chmod(0o600)
+        except OSError:
+            pass
+
+    if meta_changed:
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(
+            json.dumps(meta_payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            meta_path.chmod(0o600)
+        except OSError:
+            pass
+
+    return get_profile(safe_id) or ProfileRecord(
+        profile_id=safe_id,
+        model=None,
+        base_url=None,
+        api_key_env=None,
+        sdk_profile_path=sdk_path if sdk_path.exists() else None,
+        metadata_path=meta_path if meta_path.exists() else None,
+    )
+
+
+def delete_profile(*, profile_id: str, missing_ok: bool = False) -> dict[str, Any]:
+    safe_id = _ensure_safe_profile_id(profile_id)
+    sdk_path = get_openhands_profile_path(safe_id)
+    meta_path = get_oh_llm_metadata_path(safe_id)
+
+    removed = {"sdk_profile_path": None, "metadata_path": None}
+    any_removed = False
+
+    if sdk_path.exists():
+        sdk_path.unlink()
+        removed["sdk_profile_path"] = str(sdk_path)
+        any_removed = True
+
+    if meta_path.exists():
+        meta_path.unlink()
+        removed["metadata_path"] = str(meta_path)
+        any_removed = True
+
+    if not any_removed and not missing_ok:
+        raise FileNotFoundError(f"Profile not found: {safe_id}")
+
+    return {"profile_id": safe_id, "removed": removed, "deleted": any_removed, "ok": True}
+
+
 def upsert_profile(
     *,
     profile_id: str,
