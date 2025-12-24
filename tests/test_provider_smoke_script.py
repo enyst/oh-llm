@@ -6,6 +6,14 @@ import subprocess
 from pathlib import Path
 from shutil import which
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _require_uv() -> None:
+    if which("uv") is None:
+        pytest.skip("uv not available")
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -18,9 +26,6 @@ def _json_line(stdout: str) -> dict:
 
 
 def test_provider_smoke_help() -> None:
-    if which("uv") is None:
-        return
-
     proc = subprocess.run(
         ["uv", "run", "python", "scripts/provider_smoke.py", "--help"],
         cwd=str(_repo_root()),
@@ -32,9 +37,6 @@ def test_provider_smoke_help() -> None:
 
 
 def test_provider_smoke_fails_fast_when_env_missing(tmp_path: Path) -> None:
-    if which("uv") is None:
-        return
-
     env = dict(os.environ)
     env.pop("OPENAI_API_KEY", None)
 
@@ -63,9 +65,6 @@ def test_provider_smoke_fails_fast_when_env_missing(tmp_path: Path) -> None:
 
 
 def test_provider_smoke_mock_offline_openai(tmp_path: Path) -> None:
-    if which("uv") is None:
-        return
-
     env = dict(os.environ)
     env["OPENAI_API_KEY"] = "test-secret"
     env["OH_LLM_AGENT_SDK_PATH"] = str(tmp_path / "agent-sdk")
@@ -98,4 +97,3 @@ def test_provider_smoke_mock_offline_openai(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload["provider"] == "openai"
     assert payload["run_dir"]
-

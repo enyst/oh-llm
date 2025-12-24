@@ -188,7 +188,7 @@ def main() -> None:
     if args.use_user_home and args.home_dir:
         raise SystemExit("Cannot combine --use-user-home and --home-dir.")
 
-    preset = _PRESETS[str(args.provider)]
+    preset = _PRESETS[args.provider]
 
     if args.use_user_home:
         home_dir = Path.home()
@@ -282,7 +282,7 @@ def main() -> None:
         print(f"- api_key_env: {preset.api_key_env}")
         print(f"Run dir: {run_dir}\n")
         if not ok:
-            failure = run_payload.get("failure") or {}
+            failure = run_payload.get("failure")
             classification = failure.get("classification") if isinstance(failure, dict) else None
             if classification:
                 print(f"Failure classification: {classification}")
