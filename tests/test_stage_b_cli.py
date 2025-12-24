@@ -49,24 +49,7 @@ def _setup_sdk_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_stage_b_is_not_run_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _setup_sdk_repo(tmp_path, monkeypatch)
-    monkeypatch.setenv("TEST_API_KEY", "not-a-real-key")
-
-    runner = CliRunner()
-    add_profile = runner.invoke(
-        app,
-        [
-            "profile",
-            "add",
-            "demo",
-            "--model",
-            "gpt-5-mini",
-            "--api-key-env",
-            "TEST_API_KEY",
-        ],
-    )
-    assert add_profile.exit_code == ExitCode.OK
+    _setup_profile(tmp_path, monkeypatch)
 
     def _fake_stage_a(**kwargs: Any) -> StageAOutcome:
         return StageAOutcome(
@@ -83,6 +66,7 @@ def test_stage_b_is_not_run_by_default(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr("oh_llm.cli.run_stage_a", _fake_stage_a)
     monkeypatch.setattr("oh_llm.cli.run_stage_b", _should_not_run_stage_b)
 
+    runner = CliRunner()
     result = runner.invoke(
         app,
         ["run", "--profile", "demo", "--runs-dir", str(tmp_path / "runs"), "--json"],
@@ -96,24 +80,7 @@ def test_stage_b_is_not_run_by_default(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_stage_b_runs_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _setup_sdk_repo(tmp_path, monkeypatch)
-    monkeypatch.setenv("TEST_API_KEY", "not-a-real-key")
-
-    runner = CliRunner()
-    add_profile = runner.invoke(
-        app,
-        [
-            "profile",
-            "add",
-            "demo",
-            "--model",
-            "gpt-5-mini",
-            "--api-key-env",
-            "TEST_API_KEY",
-        ],
-    )
-    assert add_profile.exit_code == ExitCode.OK
+    _setup_profile(tmp_path, monkeypatch)
 
     def _fake_stage_a(**kwargs: Any) -> StageAOutcome:
         return StageAOutcome(
@@ -140,6 +107,7 @@ def test_stage_b_runs_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("oh_llm.cli.run_stage_a", _fake_stage_a)
     monkeypatch.setattr("oh_llm.cli.run_stage_b", _fake_stage_b)
 
+    runner = CliRunner()
     result = runner.invoke(
         app,
         [
@@ -159,6 +127,46 @@ def test_stage_b_runs_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert record["stages"]["A"]["status"] == "pass"
     assert record["stages"]["B"]["status"] == "pass"
     assert record["stages"]["B"]["result"]["tool_invoked"] is True
+
+
+@pytest.mark.parametrize("mock_mode", ["native", "compat"])
+def test_stage_b_mock_mode_writes_probe_result_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_mode: str
+) -> None:
+    _setup_profile(tmp_path, monkeypatch)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--profile",
+            "demo",
+            "--stage-b",
+            "--mock",
+            "--mock-stage-b-mode",
+            mock_mode,
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--json",
+        ],
+    )
+    assert result.exit_code == ExitCode.OK
+    payload = json.loads(result.stdout)
+    run_dir = Path(payload["run_dir"])
+
+    record = read_run_json(run_dir / "run.json")
+    assert record["stages"]["A"]["status"] == "pass"
+    assert record["stages"]["B"]["status"] == "pass"
+    assert record["stages"]["B"]["result"]["tool_invoked"] is True
+
+    probe_result_path = run_dir / "artifacts" / "stage_b_probe_result.json"
+    probe_payload = json.loads(probe_result_path.read_text(encoding="utf-8"))
+    assert probe_payload.get("ok") is True
+    assert probe_payload.get("tool_invoked") is True
+    assert probe_payload.get("tool_observed") is True
+    assert probe_payload.get("mock") is True
+    assert probe_payload.get("mock_mode") == mock_mode
 
 
 def _setup_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
