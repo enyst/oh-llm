@@ -21,6 +21,18 @@ Unmarked tests are treated as unit-by-default and will run in CI (CI only exclud
 - E2E (opt-in, local):
   - `uv run pytest -m e2e`
 
+## Manual smoke checks (opt-in)
+
+When validating a new model/provider (or a new `agent-sdk` release), use the standalone smoke script:
+
+- `uv run python scripts/openai_sdk_smoke.py --help`
+
+It creates an on-disk SDK profile (no secrets persisted) and runs Stage A, optionally Stage B. To test
+against a specific `agent-sdk` worktree, pass `--agent-sdk-path <path>`.
+
+By default, the script uses an isolated temporary `HOME` so it won’t modify your real
+`~/.openhands/llm-profiles/` store. Use `--use-user-home` (or `--home-dir <path>`) to opt out.
+
 ## Safety
 
 - Never commit or print API keys.
