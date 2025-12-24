@@ -75,4 +75,6 @@ uv run oh-llm run --profile demo --stage-b --json --redact-env MY_LLM_API_KEY
 - `docs/manual-qa-tmux.md` (manual QA workflow)
 - `docs/agent-sdk-execution.md` (how `oh-llm` runs agent-sdk)
 - `docs/providers/README.md` (provider quickrefs + quirks)
+- `docs/troubleshooting.md` (common failures + next steps)
+- `docs/secrets.md` (secrets + redaction policy)
 - `prd.md` (product/design notes)
