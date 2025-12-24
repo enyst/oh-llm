@@ -11,6 +11,19 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 
+@pytest.fixture(autouse=True)
+def _require_uv() -> None:
+    if which("uv") is None:
+        pytest.skip("uv not available")
+
+
+@pytest.fixture
+def e2e_env(tmp_path: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    env["HOME"] = str(tmp_path)
+    return env
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -19,11 +32,10 @@ def _run_oh_llm(
     *,
     env: dict[str, str],
     args: list[str],
-    cwd: Path,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["uv", "run", "oh-llm", *args],
-        cwd=str(cwd),
+        cwd=str(_repo_root()),
         env=env,
         capture_output=True,
         text=True,
@@ -49,10 +61,7 @@ def _write_run(*, run_dir: Path, run_id: str, profile_name: str, stages: dict) -
     (run_dir / "run.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def test_runs_list_and_show_json_e2e(tmp_path: Path) -> None:
-    if which("uv") is None:
-        pytest.skip("uv not available")
-
+def test_runs_list_and_show_json_e2e(tmp_path: Path, e2e_env: dict[str, str]) -> None:
     runs_dir = tmp_path / "runs"
 
     run1_dir = runs_dir / "20251224_000001_demo_aaaa"
@@ -71,13 +80,9 @@ def test_runs_list_and_show_json_e2e(tmp_path: Path) -> None:
         stages={"A": {"status": "fail"}},
     )
 
-    env = dict(os.environ)
-    env["HOME"] = str(tmp_path)
-
     list_proc = _run_oh_llm(
-        env=env,
+        env=e2e_env,
         args=["runs", "list", "--runs-dir", str(runs_dir), "--json"],
-        cwd=_repo_root(),
     )
     assert list_proc.returncode == 0, list_proc.stderr or list_proc.stdout
     payload = _json_line(list_proc)
@@ -93,9 +98,8 @@ def test_runs_list_and_show_json_e2e(tmp_path: Path) -> None:
     assert Path(runs[1]["run_dir"]).name == run1_dir.name
 
     show_proc = _run_oh_llm(
-        env=env,
+        env=e2e_env,
         args=["runs", "show", "run-aaaa", "--runs-dir", str(runs_dir), "--json"],
-        cwd=_repo_root(),
     )
     assert show_proc.returncode == 0, show_proc.stderr or show_proc.stdout
     show_payload = _json_line(show_proc)
@@ -104,20 +108,13 @@ def test_runs_list_and_show_json_e2e(tmp_path: Path) -> None:
     assert show_payload["run"]["run_id"] == "run-aaaa"
 
 
-def test_runs_show_missing_run_exits_nonzero(tmp_path: Path) -> None:
-    if which("uv") is None:
-        pytest.skip("uv not available")
-
+def test_runs_show_missing_run_exits_nonzero(tmp_path: Path, e2e_env: dict[str, str]) -> None:
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
 
-    env = dict(os.environ)
-    env["HOME"] = str(tmp_path)
-
     proc = _run_oh_llm(
-        env=env,
+        env=e2e_env,
         args=["runs", "show", "does-not-exist", "--runs-dir", str(runs_dir), "--json"],
-        cwd=_repo_root(),
     )
     assert proc.returncode != 0
     payload = _json_line(proc)
